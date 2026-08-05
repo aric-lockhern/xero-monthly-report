@@ -1,0 +1,12 @@
+.DS_Store
+node_modules/
+*.log
+
+# clasp — the local link to a specific Apps Script project, and its credentials.
+# Never commit either: .clasprc.json holds an OAuth refresh token.
+.clasp.json
+.clasprc.json
+
+# Generated decks and data exports don't belong in git.
+*.pptx.out
+export/
