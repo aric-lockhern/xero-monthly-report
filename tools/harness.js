@@ -248,14 +248,40 @@ function mockRange(sheet, row, col, nr, nc) {
   return self;
 }
 
+/**
+ * Calls into the Sheets API that only work by accident. Recorded rather than
+ * swallowed, because a stub that is more forgiving than the real API hides bugs
+ * instead of finding them — which is exactly how the first-run
+ * removeNamedRange crash reached a live spreadsheet.
+ */
+const apiViolations = [];
+
 const activeSpreadsheet = {
   getSheetByName: (n) => sheets[n] || null,
   insertSheet: (n) => (sheets[n] = mockSheet(n)),
-  getRangeByName: (n) => namedRanges[n] || null,
-  setNamedRange: (n, r) => { namedRanges[n] = r; },
-  removeNamedRange: (n) => { delete namedRanges[n]; },
-  getNamedRanges: () => Object.keys(namedRanges)
-    .map(n => ({ getName: () => n, getRange: () => namedRanges[n] })),
+  getRangeByName: (n) => (namedRanges[n] ? namedRanges[n].range : null),
+  setNamedRange: (n, r) => { namedRanges[n] = { range: r }; },
+
+  // Apps Script THROWS here when the name does not exist:
+  //   Exception: The named range "RPT_KPI" does not exist.
+  // And because Apps Script batches writes, that throw can surface at the next
+  // flush() rather than at the call site — so a try/catch around it is not a
+  // reliable guard. Correct code must not call this on a missing name at all.
+  removeNamedRange: (n) => {
+    if (!namedRanges[n]) {
+      apiViolations.push(`removeNamedRange("${n}") on a name that does not exist — ` +
+        `throws in Apps Script, and the throw may be deferred to the next flush() ` +
+        `where a try/catch cannot help. Check whether the range exists first.`);
+      throw new Error(`The named range "${n}" does not exist.`);
+    }
+    delete namedRanges[n];
+  },
+
+  getNamedRanges: () => Object.keys(namedRanges).map(n => ({
+    getName: () => n,
+    getRange: () => namedRanges[n].range,
+    setRange: (r) => { namedRanges[n].range = r; },
+  })),
 };
 
 const twStoreSheet = mockSheet('_store', loadStore(ARGS.store));
@@ -425,6 +451,15 @@ console.log('\n' + HR);
 console.log('SELF-TEST  (apps-script/SelfTest.gs — identical to Diagnostics → Run self-test)');
 console.log(HR);
 
+if (apiViolations.length) {
+  console.log('\n' + HR);
+  console.log('SHEETS API MISUSE  (' + apiViolations.length + ')');
+  console.log(HR);
+  apiViolations.forEach(v => console.log(wrap('  ✗ ', v)));
+  console.log('\nThese would throw against the real Sheets API. Fix them before deploying.');
+  process.exitCode = 1;
+}
+
 let report;
 try {
   report = vm.runInContext('selfTestReport_()', context);
@@ -434,7 +469,7 @@ try {
 }
 report.lines.forEach(l => console.log(l));
 
-process.exit(report.failed ? 1 : 0);
+process.exit((report.failed || apiViolations.length) ? 1 : 0);
 
 // ============================== OUTPUT HELPERS ============================
 
@@ -465,9 +500,9 @@ function cell(v, w) {
 }
 
 function dumpBlock(name) {
-  const r = namedRanges[name];
-  if (!r) { console.log(`\n[${name}]  MISSING`); return; }
-  const v = r.getValues();
+  const entry = namedRanges[name];
+  if (!entry) { console.log(`\n[${name}]  MISSING`); return; }
+  const v = entry.range.getValues();
   console.log(`\n[${name}]  ${v.length}×${v[0].length}`);
   const w = v[0].length > 9 ? 13 : 20;
   v.forEach(row => console.log('  ' + row.map(c => cell(c, w)).join('')));

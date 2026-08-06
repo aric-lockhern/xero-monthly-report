@@ -1216,6 +1216,18 @@ function newWriter_(sheet) {
   var cursor = 1;
   var ss = SpreadsheetApp.getActiveSpreadsheet();
 
+  // Existing named ranges, read ONCE.
+  //
+  // Do not be tempted by removeNamedRange()-then-setNamedRange(): that throws
+  // ("The named range X does not exist") whenever the name isn't already there,
+  // which is every name on a first build. Worse, Apps Script batches writes, so
+  // the throw can surface at the next flush() rather than at the call site —
+  // a try/catch around it is not a reliable guard. Updating an existing
+  // NamedRange in place via setRange() avoids the whole problem.
+  var existingRanges = {};
+  ss.getNamedRanges().forEach(function (nr) { existingRanges[nr.getName()] = nr; });
+  var emitted = {};
+
   return {
     heading: function (text, sub) {
       sheet.getRange(cursor, 1).setValue(text)
@@ -1295,9 +1307,16 @@ function newWriter_(sheet) {
 
       var rangeRows = rows.length + 1;
       if (opts.name) {
+        if (emitted[opts.name]) {
+          throw new Error('Block "' + opts.name + '" was emitted twice in one build. ' +
+            'Every RPT_* name must be unique, or the second one silently wins.');
+        }
+        emitted[opts.name] = true;
+
         var range = sheet.getRange(top, 1, rangeRows, width);
-        try { ss.removeNamedRange(opts.name); } catch (e) {}
-        ss.setNamedRange(opts.name, range);
+        var existing = existingRanges[opts.name];
+        if (existing) existing.setRange(range);        // repoint, no remove
+        else          ss.setNamedRange(opts.name, range);
       }
 
       cursor = top + rangeRows + 2;
