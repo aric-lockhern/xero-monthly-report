@@ -45,6 +45,7 @@ function onOpen() {
       .addItem('Refresh product images (slide 11)', 'refreshProductImages')
       .addItem('Product image status', 'productImageStatus')
       .addItem('Diagnose the product feed', 'diagnoseProductFeed')
+      .addItem('Prepare product image rows (paste URLs by hand)', 'prepareProductImageRows')
       .addSeparator()
       .addItem('Set up the Bing webhook', 'setupBingWebhook')
       .addItem('Bing webhook status', 'bingWebhookStatus'))

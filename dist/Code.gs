@@ -2919,6 +2919,13 @@ function feedFetchHelp_(e) {
       '     The full correct manifest is dist/appsscript.json in the repo — paste the whole thing.\n' +
       '  5. Save, then run Setup → Refresh product images. You WILL now be re-prompted, and the ' +
       'consent screen will list "Connect to an external service".\n\n' +
+      'IF IT STILL FAILS after fixing the manifest, the stored grant is cached. Force a fresh one:\n' +
+      '  a. Go to  myaccount.google.com/permissions\n' +
+      '  b. Find this project (its name, or "Untitled project") → Remove access\n' +
+      '  c. Run anything from the Monthly Report menu → authorise again from scratch\n\n' +
+      'Or skip the whole thing: Setup → Prepare product image rows writes this month\'s five ' +
+      'products into the "' + PRODUCT_IMAGE_SHEET + '" tab with empty URL cells. Paste five image ' +
+      'URLs and the deck fills — no external-request permission needed at all.\n\n' +
       'Alternatively delete the whole "oauthScopes" key: Apps Script then infers scopes from the ' +
       'code on every save, which cannot go stale.';
   }
@@ -3227,6 +3234,65 @@ function diagnoseProductFeed() {
   }
 
   tell_('Feed diagnostic', lines.join('\n'));
+}
+
+
+// ============================== MANUAL ESCAPE HATCH ========================
+
+/**
+ * Seed the tab with THIS MONTH's five slide-11 products, ready for five pasted
+ * URLs.
+ *
+ * This exists so product images never depend on the external-request permission.
+ * Feed fetching is the convenience; the tab is the actual source of truth, and it
+ * can always be filled by hand. Five URLs a month is a minute of work — a
+ * perfectly reasonable place to stop if the scope proves troublesome.
+ */
+function prepareProductImageRows() {
+  applySettings_();
+  var sheet = ensureProductImageTab_();
+
+  var range = SpreadsheetApp.getActiveSpreadsheet().getRangeByName('RPT_TOP_ITEMS');
+  if (!range) {
+    tell_('Nothing to prepare yet',
+      'Run Monthly Report → Build report first. That produces slide 11\'s product list, which is ' +
+      'what this fills in.');
+    return;
+  }
+
+  var body = range.getValues().slice(1);   // [title, item_id, orders, revenue, cost, roas]
+  var existing = readProductImages_();
+  var added = [], already = [];
+
+  for (var i = 0; i < body.length; i++) {
+    var title = String(body[i][0] || '').trim();
+    var itemId = String(body[i][1] || '').trim();
+    if (!title && !itemId) continue;
+    if (productImageUrl_(existing, itemId, title)) { already.push(title || itemId); continue; }
+    // source='manual' so a later feed refresh never overwrites what you paste.
+    added.push([itemId, title, '', 'manual']);
+  }
+
+  if (!added.length) {
+    tell_('Every product already has an image',
+      already.length + ' product(s) on slide 11 resolve to an image already. Nothing to add.');
+    return;
+  }
+
+  var start = Math.max(sheet.getLastRow() + 1, 2);
+  sheet.getRange(start, 1, added.length, PRODUCT_IMAGE_HEADER.length).setValues(added);
+  sheet.showSheet();
+  sheet.activate();
+  sheet.setActiveRange(sheet.getRange(start, 3, added.length, 1));
+
+  tell_('Ready for image URLs',
+    added.length + ' product(s) added to the "' + PRODUCT_IMAGE_SHEET + '" tab' +
+    (already.length ? ' (' + already.length + ' already had an image)' : '') + '.\n\n' +
+    'Paste an image URL into the highlighted image_url column for each, then run\n' +
+    'Monthly Report → Build report + generate deck.\n\n' +
+    'Where to get the URLs: open the product on your own site, right-click the main photo → Copy ' +
+    'image address. Any publicly reachable URL works — Slides fetches it directly.\n\n' +
+    'These rows are marked source=manual, so a later feed refresh will never overwrite them.');
 }
 
 
@@ -4811,6 +4877,7 @@ function onOpen() {
       .addItem('Refresh product images (slide 11)', 'refreshProductImages')
       .addItem('Product image status', 'productImageStatus')
       .addItem('Diagnose the product feed', 'diagnoseProductFeed')
+      .addItem('Prepare product image rows (paste URLs by hand)', 'prepareProductImageRows')
       .addSeparator()
       .addItem('Set up the Bing webhook', 'setupBingWebhook')
       .addItem('Bing webhook status', 'bingWebhookStatus'))
