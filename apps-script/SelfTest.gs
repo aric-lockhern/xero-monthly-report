@@ -36,15 +36,40 @@ function selfTestReport_() {
   var t = newAsserter_();
   var ctx = buildReportContext_();
 
+  // Has a report ever been written to this spreadsheet?
+  //
+  // Checks A, C and F read the Report tab's OUTPUT; the rest recompute from
+  // source. Running the self-test before a first successful build therefore used
+  // to emit twenty identical "missing — run Build report first" failures, which
+  // buries the one instruction that matters under a wall of red. Say it once.
+  var built = false;
+  var existing = SpreadsheetApp.getActiveSpreadsheet().getNamedRanges();
+  for (var n = 0; n < existing.length; n++) {
+    if (existing[n].getName().indexOf('RPT_') === 0) { built = true; break; }
+  }
+
   checkDeckContract_(t);
-  checkShapes_(t);
+  if (built) {
+    checkShapes_(t);
+  } else {
+    t.section('A / C / F · Report tab output — SKIPPED');
+    t.note('No RPT_* named range exists, so no report has been built in this spreadsheet yet.');
+    t.note('→  Run  Monthly Report → Build report,  then run this self-test again.');
+    t.note('Everything below checks the computation from source data and is still meaningful.');
+  }
   checkSpine_(t, ctx);
   checkPartitions_(t, ctx);
-  checkWrittenDeltas_(t);
+  if (built) checkWrittenDeltas_(t);
   checkDerivedRatios_(t, ctx);
   checkRatiosHaveComponents_(t, ctx);
-  checkCampaignMap_(t);
+  if (built) checkCampaignMap_(t, ctx);
   reportCoverage_(t, ctx);
+
+  if (!built) {
+    t.lines.push('');
+    t.lines.push('NOTE: the output checks were skipped because nothing has been built yet. ' +
+      'Run Build report and re-run to get the full ' + '~130' + ' checks.');
+  }
 
   var lines = t.lines.slice();
   lines.push('');
@@ -243,6 +268,36 @@ function checkSpine_(t, ctx) {
         'got ' + fmtNum_(d.cost));
     }
   });
+
+  // MONTHLY-GRAIN SAFETY. Microsoft Advertising Scripts have no report query
+  // surface, so Bing history arrives as whole-month totals dated the 1st. Such a
+  // row must be matched by MONTH and never by date range — otherwise a five-day
+  // promo starting on the 1st would absorb an entire month of Bing spend and
+  // report a catastrophic promo ROAS on a client slide.
+  var monthRow = [{ date: '2026-07-01', grain: 'month', channel: 'bing', spend: 22312 }];
+  var dayRow   = [{ date: '2026-07-01', grain: 'day',   channel: 'bing', spend: 700 }];
+  var wholeMonth = { month: '2026-07', start: '2026-07-01', end: '2026-07-31' };
+  var promoWindow = { start: '2026-07-01', end: '2026-07-05' };   // no `month` — sub-month
+
+  t.ok('a monthly row IS matched by its own month',
+    rowsInPeriod_(monthRow, wholeMonth).length === 1);
+  t.ok('a monthly row is NOT matched by a sub-month window',
+    rowsInPeriod_(monthRow, promoWindow).length === 0,
+    'matched ' + rowsInPeriod_(monthRow, promoWindow).length + ' row(s) — a promo would absorb a ' +
+    'whole month of spend');
+  t.ok('a monthly row is NOT matched by a different month',
+    rowsInPeriod_(monthRow, { month: '2026-06', start: '2026-06-01', end: '2026-06-30' }).length === 0);
+  t.ok('a daily row IS still matched by a sub-month window',
+    rowsInPeriod_(dayRow, promoWindow).length === 1);
+
+  // Promo windows read Triple Whale, not the engine, so monthly rows cannot reach
+  // them at all. Belt and braces: the assertions above hold even if that changes.
+  var monthlyRows = 0;
+  for (var mi = 0; mi < ctx.engRows.length; mi++) if (ctx.engRows[mi].grain === 'month') monthlyRows++;
+  if (monthlyRows) {
+    t.note(monthlyRows + ' engine row(s) are whole-month totals (Bing history). They contribute to ' +
+      'the month tables and are invisible to promo windows, by design.');
+  }
 
   // Per-channel combination: a channel the engine misses must not have its cost
   // dropped while its Triple Whale revenue is kept.
@@ -488,10 +543,23 @@ function checkRatiosHaveComponents_(t, ctx) {
 
 // ============================== F · CAMPAIGN MAP ===========================
 
-function checkCampaignMap_(t) {
+function checkCampaignMap_(t, ctx) {
   t.section('F · Campaign Map integrity');
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(MAP_SHEET);
-  if (!sheet || sheet.getLastRow() < 2) { t.ok(MAP_SHEET + ' populated', false, 'empty — run Build report'); return; }
+  var noData = !ctx.twCoverage.current && !ctx.engCoverage.current;
+
+  if (!sheet || sheet.getLastRow() < 2) {
+    // An empty map is CORRECT when the report month has no campaigns in it. Only
+    // an empty map for a month that does have data means something went wrong.
+    if (noData) {
+      t.note(MAP_SHEET + ' is empty because ' + ctx.periods.current.label + ' has no data from ' +
+        'either source — expected, not a failure.');
+    } else {
+      t.ok(MAP_SHEET + ' populated', false, 'empty, but ' + ctx.periods.current.label +
+        ' has data — run Build report');
+    }
+    return;
+  }
 
   var vals = sheet.getRange(2, 1, sheet.getLastRow() - 1, MAP_HEADER.length).getValues();
   var seen = {}, dupes = [], badTactic = [], badBrand = [];

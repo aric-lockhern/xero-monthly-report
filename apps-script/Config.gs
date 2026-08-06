@@ -145,6 +145,10 @@ var ENGINE_DAY_SHEET     = '_eng_day';       // Date × Campaign engine metrics 
 // Ads export covering the months before Triple Whale existed. Read alongside
 // _eng_day, so a channel imported here behaves exactly like an automated one.
 var ENGINE_MANUAL_SHEET  = '_eng_manual';
+// Written only by the webhook receiver in Webhook.gs, fed by the Microsoft
+// Advertising Script. Read alongside the other two, so Bing engine rows behave
+// exactly like Google ones.
+var ENGINE_BING_SHEET    = '_eng_bing';
 var ENGINE_PRODUCT_SHEET = '_eng_product';   // product_type_l1 × l2   (slide 8)
 var ENGINE_PMAXCAT_SHEET = '_eng_pmax_cat';  // PMax search categories (slide 10)
 var ENGINE_ITEM_SHEET    = '_eng_item';      // item id × title        (slide 11)

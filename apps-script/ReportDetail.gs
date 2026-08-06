@@ -104,6 +104,8 @@ function renderImpressionShareBlocks_(w, ctx) {
   for (var i = 0; i < ctx.engRows.length; i++) {
     var r = ctx.engRows[i];
     if (r.date < period.start || r.date > period.end) continue;
+    // A whole-month total would plot as one bogus daily point.
+    if (r.grain === 'month') continue;
     if (!isDeckBrand_(r.cls.brand)) continue;
     if (r.cls.deckGroup !== 'SEARCH') continue;
     brandSearch.push(r);

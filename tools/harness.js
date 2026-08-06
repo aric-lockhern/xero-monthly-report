@@ -44,7 +44,7 @@ const SRC_DIR = path.join(__dirname, '..', 'apps-script');
 // Config first so its top-level vars exist; the rest share one global scope, as
 // they do in Apps Script itself.
 const LOAD_ORDER = ['Config', 'Metrics', 'Util', 'Ingest', 'Classify', 'Report',
-                    'ReportDetail', 'Slides', 'Diagnostics', 'SelfTest', 'Code'];
+                    'ReportDetail', 'Slides', 'Webhook', 'Diagnostics', 'SelfTest', 'Code'];
 
 // ============================== ARGS ======================================
 
@@ -300,7 +300,17 @@ const SlidesApp = { openById: () => { throw new Error('harness: Slides is not st
 const DriveApp = { getFileById: () => { throw new Error('harness: Drive is not stubbed'); } };
 const ScriptApp = { getProjectTriggers: () => [], newTrigger: () => { throw new Error('harness: no triggers'); } };
 const LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
-const PropertiesService = { getScriptProperties: () => ({ getProperty: () => null, setProperty: () => {} }) };
+const scriptProps = {};
+const PropertiesService = {
+  getScriptProperties: () => ({
+    getProperty: (k) => (scriptProps[k] === undefined ? null : scriptProps[k]),
+    setProperty: (k, v) => { scriptProps[k] = v; },
+  }),
+};
+const ContentService = {
+  MimeType: { JSON: 'application/json' },
+  createTextOutput: (t) => ({ _text: t, setMimeType: () => ({ _text: t, getContent: () => t }), getContent: () => t }),
+};
 
 // ============================== ENGINE FIXTURES ===========================
 
@@ -402,7 +412,7 @@ setConfig('CURRENCY', ARGS.region === 'EU' ? "'EUR'" : "'USD'");
 
 const sandbox = {
   Utilities, Session, Logger, SpreadsheetApp, SlidesApp, DriveApp,
-  ScriptApp, LockService, PropertiesService, console,
+  ScriptApp, LockService, PropertiesService, ContentService, console,
 };
 const context = vm.createContext(sandbox);
 

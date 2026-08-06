@@ -169,6 +169,10 @@ var ENGINE_DAY_SHEET     = '_eng_day';       // Date × Campaign engine metrics 
 // Ads export covering the months before Triple Whale existed. Read alongside
 // _eng_day, so a channel imported here behaves exactly like an automated one.
 var ENGINE_MANUAL_SHEET  = '_eng_manual';
+// Written only by the webhook receiver in Webhook.gs, fed by the Microsoft
+// Advertising Script. Read alongside the other two, so Bing engine rows behave
+// exactly like Google ones.
+var ENGINE_BING_SHEET    = '_eng_bing';
 var ENGINE_PRODUCT_SHEET = '_eng_product';   // product_type_l1 × l2   (slide 8)
 var ENGINE_PMAXCAT_SHEET = '_eng_pmax_cat';  // PMax search categories (slide 10)
 var ENGINE_ITEM_SHEET    = '_eng_item';      // item id × title        (slide 11)
@@ -795,7 +799,9 @@ function readEngineDays_() {
   // Automated feed plus any hand-imported history. The manual tab is read second
   // but is not special-cased: a Microsoft Ads month imported by hand and a Google
   // Ads month written by the script are the same kind of row from here on.
-  var raw = readEngineTab_(ENGINE_DAY_SHEET).concat(readEngineTab_(ENGINE_MANUAL_SHEET));
+  var raw = readEngineTab_(ENGINE_DAY_SHEET)
+    .concat(readEngineTab_(ENGINE_MANUAL_SHEET))
+    .concat(readEngineTab_(ENGINE_BING_SHEET));
   var rows = [], types = {};
 
   for (var i = 0; i < raw.length; i++) {
@@ -813,6 +819,9 @@ function readEngineDays_() {
 
     rows.push({
       date: date, channel: channel, campaign: campaign,
+      // 'month' means this row is a whole-month total, not a single day. Matched
+      // by month rather than by date range — see rowsInPeriod_.
+      grain: String(r.grain || 'day').toLowerCase() === 'month' ? 'month' : 'day',
       spend:          num_(r.cost),
       impressions:    impr,
       clicks:         num_(r.clicks),
@@ -837,14 +846,40 @@ function readEngineDays_() {
 
 // ============================== PERIOD FILTERING ===========================
 
-/** Rows whose date falls inside a { start, end } month window (inclusive). */
+/**
+ * Rows belonging to a period.
+ *
+ * Daily rows match on the inclusive date range. MONTHLY rows — whole-month
+ * totals, dated the 1st as a key — match only when the period IS that month.
+ *
+ * That distinction is load-bearing. A monthly total dated the 1st would
+ * otherwise be pulled, in full, into any narrower window containing the 1st: a
+ * five-day promo starting on the 1st would absorb an entire month of Bing spend
+ * and report a catastrophic promo ROAS. Monthly rows are deliberately invisible
+ * to sub-month windows rather than approximated into them.
+ */
 function rowsInPeriod_(rows, period) {
   var out = [];
+  var periodMonth = period.month ||
+    (period.start === firstOfMonth_(period.start) && period.end === lastOfMonth_(period.start)
+      ? period.start.slice(0, 7) : '');
+
   for (var i = 0; i < rows.length; i++) {
-    var d = rows[i].date;
-    if (d >= period.start && d <= period.end) out.push(rows[i]);
+    var r = rows[i];
+    if (r.grain === 'month') {
+      if (periodMonth && r.date.slice(0, 7) === periodMonth) out.push(r);
+    } else if (r.date >= period.start && r.date <= period.end) {
+      out.push(r);
+    }
   }
   return out;
+}
+
+function firstOfMonth_(ds) { return String(ds).slice(0, 7) + '-01'; }
+
+function lastOfMonth_(ds) {
+  var y = Number(String(ds).slice(0, 4)), m = Number(String(ds).slice(5, 7));
+  return Utilities.formatDate(new Date(y, m, 0), tz_(), 'yyyy-MM-dd');
 }
 
 function isAdsChannel_(ch)    { return TW_ADS_CHANNELS.indexOf(ch) !== -1; }
@@ -1958,6 +1993,8 @@ function renderImpressionShareBlocks_(w, ctx) {
   for (var i = 0; i < ctx.engRows.length; i++) {
     var r = ctx.engRows[i];
     if (r.date < period.start || r.date > period.end) continue;
+    // A whole-month total would plot as one bogus daily point.
+    if (r.grain === 'month') continue;
     if (!isDeckBrand_(r.cls.brand)) continue;
     if (r.cls.deckGroup !== 'SEARCH') continue;
     brandSearch.push(r);
@@ -2545,6 +2582,281 @@ function fillProductCards_(slides, skipped) {
 
 
 // ==========================================================================
+// SOURCE FILE: apps-script/Webhook.gs
+// ==========================================================================
+
+/**
+ * Xero Shoes — Monthly Report  ·  WEBHOOK RECEIVER
+ * =============================================================================
+ * Accepts engine rows POSTed from outside Google — currently the Microsoft
+ * Advertising Script in microsoft-ads-script/engine-report-bing.js.
+ *
+ * WHY A WEBHOOK RATHER THAN THE SHEETS API
+ * -----------------------------------------------------------------------------
+ * Microsoft Advertising Scripts can call the Google Sheets API, but only with a
+ * Google Cloud OAuth client id, secret and refresh token stored inside the Bing
+ * script. That is a credential to create, rotate and leak.
+ *
+ * Microsoft Scripts do have UrlFetchApp, so they can POST here instead. No
+ * Google OAuth client, no refresh token, and every line that writes to the
+ * spreadsheet stays in this project — which means the tab schema has exactly one
+ * owner.
+ *
+ * SECURITY, STATED PLAINLY
+ * -----------------------------------------------------------------------------
+ * A Web App reachable by "Anyone" is required, because Microsoft's script cannot
+ * present a Google identity. Two things guard it:
+ *
+ *   · the /exec URL is long and unguessable
+ *   · a shared secret in the BING_WEBHOOK_SECRET script property, compared on
+ *     every request
+ *
+ * Worst case if the URL and secret both leak: someone writes junk ad metrics into
+ * one hidden tab, which a re-run overwrites. This endpoint cannot read the
+ * spreadsheet, cannot touch any other tab, and cannot run any other function.
+ * That is an acceptable trade for removing an OAuth client — but rotate the
+ * secret if you ever share the script's source outside the team.
+ */
+
+// Written only by this receiver. Read alongside _eng_day and _eng_manual.
+var ENGINE_WEBHOOK_SHEET = '_eng_bing';
+var WEBHOOK_SECRET_PROP  = 'BING_WEBHOOK_SECRET';
+
+// Column order for the tab this writes. Superset of _eng_day, plus `grain`.
+var WEBHOOK_HEADER = ['date', 'grain', 'channel', 'account', 'campaign_id', 'campaign',
+                      'channel_type', 'channel_sub_type', 'labels', 'impressions', 'clicks',
+                      'cost', 'conversions', 'conversions_value', 'search_impression_share'];
+
+// ============================== ENTRY POINT ================================
+
+/**
+ * Every response is 200 with a JSON body carrying `ok`. Apps Script turns a
+ * thrown error into an HTML page, which is useless to a caller parsing JSON —
+ * so failures are caught and reported as `{ok: false, error: …}` instead.
+ */
+function doPost(e) {
+  try {
+    return jsonOut_(handlePost_(e));
+  } catch (err) {
+    try { progress_('Webhook error: ' + err.message); } catch (ignored) {}
+    return jsonOut_({ ok: false, error: String(err && err.message || err) });
+  }
+}
+
+/** A GET is only ever a human checking the URL is live. It reveals nothing. */
+function doGet() {
+  return jsonOut_({
+    ok: true,
+    service: 'xero-monthly-report webhook',
+    region: REGION,
+    hint: 'POST engine rows here. See microsoft-ads-script/engine-report-bing.js.',
+  });
+}
+
+function handlePost_(e) {
+  if (!e || !e.postData || !e.postData.contents) {
+    return { ok: false, error: 'No POST body.' };
+  }
+
+  var body;
+  try { body = JSON.parse(e.postData.contents); }
+  catch (err) { return { ok: false, error: 'Body is not valid JSON: ' + err.message }; }
+
+  var expected = PropertiesService.getScriptProperties().getProperty(WEBHOOK_SECRET_PROP);
+  if (!expected) {
+    return { ok: false, error: 'The ' + WEBHOOK_SECRET_PROP + ' script property is not set in this ' +
+      'Apps Script project, so no request can be authenticated. Project Settings → Script ' +
+      'Properties → add it, then use the same value as WEBHOOK_SECRET in the Bing script.' };
+  }
+  if (!body.secret || !constantTimeEquals_(String(body.secret), String(expected))) {
+    return { ok: false, error: 'Bad or missing secret.' };
+  }
+
+  var rows = body.rows;
+  if (!rows || !rows.length) return { ok: true, written: 0, replaced: false, note: 'No rows in batch.' };
+
+  var channel = String(body.channel || '').trim();
+  if (!channel) return { ok: false, error: 'Payload has no `channel`.' };
+  if (TW_ADS_CHANNELS.indexOf(channel) === -1) {
+    return { ok: false, error: 'Channel "' + channel + '" is not in TW_ADS_CHANNELS (' +
+      TW_ADS_CHANNELS.join(', ') + '), so rows for it would be read by nothing. Fix the channel ' +
+      'in the sending script, or add it to Config.gs.' };
+  }
+
+  // Serialise: two batches arriving together must not interleave their writes.
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) return { ok: false, error: 'Busy — another batch holds the lock. Retry.' };
+
+  try {
+    var replaced = false;
+    if (body.replace) {
+      // Idempotent re-runs: clear exactly the (channel, months) this push covers,
+      // then append. A month whose spend has gone to zero is therefore removed
+      // rather than left stale, and re-running never doubles anything.
+      clearChannelMonths_(channel, body.months || []);
+      replaced = true;
+    }
+    var written = appendWebhookRows_(rows);
+    progress_('Webhook: ' + written + ' ' + channel + ' row(s) received from ' +
+      (body.source || 'unknown') + (replaced ? ' (months reset first)' : '') + '.');
+    return { ok: true, written: written, replaced: replaced };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// ============================== SHEET WRITES ===============================
+
+function webhookSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(ENGINE_WEBHOOK_SHEET);
+  if (!sheet) {
+    sheet = ss.insertSheet(ENGINE_WEBHOOK_SHEET);
+    sheet.getRange(1, 1, 1, WEBHOOK_HEADER.length).setValues([WEBHOOK_HEADER]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+    sheet.hideSheet();
+  }
+  // Header may be missing if someone cleared the tab by hand.
+  if (sheet.getLastRow() < 1 || !String(sheet.getRange(1, 1).getValue()).trim()) {
+    sheet.getRange(1, 1, 1, WEBHOOK_HEADER.length).setValues([WEBHOOK_HEADER]).setFontWeight('bold');
+  }
+  return sheet;
+}
+
+/** Drop rows for one channel in the given months, keeping everything else. */
+function clearChannelMonths_(channel, months) {
+  var sheet = webhookSheet_();
+  if (sheet.getLastRow() < 2) return 0;
+
+  var keepMonth = {};
+  for (var i = 0; i < months.length; i++) keepMonth[String(months[i])] = true;
+
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, WEBHOOK_HEADER.length).getValues();
+  var kept = [];
+  for (var r = 0; r < values.length; r++) {
+    var date = String(values[r][0] || '');
+    var ch = String(values[r][2] || '');
+    if (!date) continue;
+    var inScope = (ch === channel) && keepMonth[date.slice(0, 7)];
+    if (!inScope) kept.push(values[r]);
+  }
+
+  sheet.getRange(2, 1, values.length, WEBHOOK_HEADER.length).clearContent();
+  if (kept.length) sheet.getRange(2, 1, kept.length, WEBHOOK_HEADER.length).setValues(kept);
+  return values.length - kept.length;
+}
+
+function appendWebhookRows_(rows) {
+  var sheet = webhookSheet_();
+  var grid = [];
+
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i] || {};
+    var date = normDate_(r.date);
+    if (!date) continue;                     // a row with no date can never be matched
+    var line = [];
+    for (var c = 0; c < WEBHOOK_HEADER.length; c++) {
+      var key = WEBHOOK_HEADER[c];
+      var v = r[key];
+      line.push(v === undefined || v === null ? '' : v);
+    }
+    line[0] = date;
+    // Default the grain rather than trusting the sender to send it: an unlabelled
+    // row treated as daily would be matched by date range, and a monthly total
+    // matched that way can be absorbed whole into a narrower window.
+    line[1] = String(r.grain || 'day').toLowerCase() === 'month' ? 'month' : 'day';
+    grid.push(line);
+  }
+
+  if (!grid.length) return 0;
+  var start = Math.max(sheet.getLastRow() + 1, 2);
+  sheet.getRange(start, 1, grid.length, WEBHOOK_HEADER.length).setValues(grid);
+  // Dates as text, matching every other tab in this project.
+  sheet.getRange(start, 1, grid.length, 1).setNumberFormat('@');
+  return grid.length;
+}
+
+// ============================== HELPERS ====================================
+
+/** Length-independent comparison, so a mismatch leaks nothing through timing. */
+function constantTimeEquals_(a, b) {
+  if (a.length !== b.length) return false;
+  var diff = 0;
+  for (var i = 0; i < a.length; i++) diff |= (a.charCodeAt(i) ^ b.charCodeAt(i));
+  return diff === 0;
+}
+
+function jsonOut_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+// ============================== SETUP HELPERS ==============================
+
+/**
+ * Generate and store a webhook secret, and print what the Bing script needs.
+ * Run from the menu: Setup → Set up the Bing webhook.
+ */
+function setupBingWebhook() {
+  var props = PropertiesService.getScriptProperties();
+  var existing = props.getProperty(WEBHOOK_SECRET_PROP);
+  var secret = existing;
+
+  if (!secret) {
+    secret = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '').slice(0, 16);
+    props.setProperty(WEBHOOK_SECRET_PROP, secret);
+  }
+
+  tell_(existing ? 'Bing webhook — already configured' : 'Bing webhook — secret created',
+    (existing
+      ? 'A secret already exists. Reusing it rather than rotating, so any Bing script already ' +
+        'configured keeps working.\n\n'
+      : 'A new secret has been generated and saved to the ' + WEBHOOK_SECRET_PROP +
+        ' script property.\n\n') +
+    'WEBHOOK_SECRET:\n' + secret + '\n\n' +
+    '— — —\n\n' +
+    'Now publish this project as a Web App, if you have not already:\n\n' +
+    '  1. Apps Script editor → Deploy → New deployment\n' +
+    '  2. Type: Web app\n' +
+    '  3. Execute as: Me\n' +
+    '  4. Who has access: Anyone      ← required; Microsoft cannot present a Google identity\n' +
+    '  5. Deploy, then copy the URL ending in /exec\n\n' +
+    'Paste that URL and the secret above into CONFIG at the top of ' +
+    'microsoft-ads-script/engine-report-bing.js.\n\n' +
+    'Re-deploy (Deploy → Manage deployments → edit → Version: New version) after any code change, ' +
+    'or the Web App keeps serving the old code.');
+}
+
+/** Confirm what the receiver currently holds. */
+function bingWebhookStatus() {
+  var props = PropertiesService.getScriptProperties();
+  var hasSecret = !!props.getProperty(WEBHOOK_SECRET_PROP);
+  var rows = readEngineTab_(ENGINE_WEBHOOK_SHEET);
+
+  var byChannel = {}, byMonth = {}, grains = {};
+  rows.forEach(function (r) {
+    var ch = String(r.channel || '?');
+    byChannel[ch] = (byChannel[ch] || 0) + 1;
+    byMonth[String(r.date || '').slice(0, 7)] = true;
+    grains[String(r.grain || 'day')] = (grains[String(r.grain || 'day')] || 0) + 1;
+  });
+  var months = Object.keys(byMonth).filter(String).sort();
+
+  tell_('Bing webhook status',
+    'Secret set: ' + (hasSecret ? 'yes' : 'NO — run Setup → Set up the Bing webhook') + '\n' +
+    'Tab: ' + ENGINE_WEBHOOK_SHEET + '\n' +
+    'Rows: ' + rows.length + '\n' +
+    'Channels: ' + (Object.keys(byChannel).map(function (c) { return c + ' (' + byChannel[c] + ')'; }).join(', ') || 'none') + '\n' +
+    'Grain: ' + (Object.keys(grains).map(function (g) { return g + ' (' + grains[g] + ')'; }).join(', ') || 'none') + '\n' +
+    'Months: ' + (months.length ? months[0] + ' → ' + months[months.length - 1] + '  (' + months.length + ')' : 'none') + '\n\n' +
+    (rows.length
+      ? 'These rows are read alongside _eng_day. Monthly-grain rows are matched by MONTH, never by ' +
+        'date range, so they cannot be absorbed into a narrower window such as a promo.'
+      : 'Nothing received yet. Run the Microsoft Advertising Script and check its log.'));
+}
+
+
+// ==========================================================================
 // SOURCE FILE: apps-script/Diagnostics.gs
 // ==========================================================================
 
@@ -2808,15 +3120,40 @@ function selfTestReport_() {
   var t = newAsserter_();
   var ctx = buildReportContext_();
 
+  // Has a report ever been written to this spreadsheet?
+  //
+  // Checks A, C and F read the Report tab's OUTPUT; the rest recompute from
+  // source. Running the self-test before a first successful build therefore used
+  // to emit twenty identical "missing — run Build report first" failures, which
+  // buries the one instruction that matters under a wall of red. Say it once.
+  var built = false;
+  var existing = SpreadsheetApp.getActiveSpreadsheet().getNamedRanges();
+  for (var n = 0; n < existing.length; n++) {
+    if (existing[n].getName().indexOf('RPT_') === 0) { built = true; break; }
+  }
+
   checkDeckContract_(t);
-  checkShapes_(t);
+  if (built) {
+    checkShapes_(t);
+  } else {
+    t.section('A / C / F · Report tab output — SKIPPED');
+    t.note('No RPT_* named range exists, so no report has been built in this spreadsheet yet.');
+    t.note('→  Run  Monthly Report → Build report,  then run this self-test again.');
+    t.note('Everything below checks the computation from source data and is still meaningful.');
+  }
   checkSpine_(t, ctx);
   checkPartitions_(t, ctx);
-  checkWrittenDeltas_(t);
+  if (built) checkWrittenDeltas_(t);
   checkDerivedRatios_(t, ctx);
   checkRatiosHaveComponents_(t, ctx);
-  checkCampaignMap_(t);
+  if (built) checkCampaignMap_(t, ctx);
   reportCoverage_(t, ctx);
+
+  if (!built) {
+    t.lines.push('');
+    t.lines.push('NOTE: the output checks were skipped because nothing has been built yet. ' +
+      'Run Build report and re-run to get the full ' + '~130' + ' checks.');
+  }
 
   var lines = t.lines.slice();
   lines.push('');
@@ -3015,6 +3352,36 @@ function checkSpine_(t, ctx) {
         'got ' + fmtNum_(d.cost));
     }
   });
+
+  // MONTHLY-GRAIN SAFETY. Microsoft Advertising Scripts have no report query
+  // surface, so Bing history arrives as whole-month totals dated the 1st. Such a
+  // row must be matched by MONTH and never by date range — otherwise a five-day
+  // promo starting on the 1st would absorb an entire month of Bing spend and
+  // report a catastrophic promo ROAS on a client slide.
+  var monthRow = [{ date: '2026-07-01', grain: 'month', channel: 'bing', spend: 22312 }];
+  var dayRow   = [{ date: '2026-07-01', grain: 'day',   channel: 'bing', spend: 700 }];
+  var wholeMonth = { month: '2026-07', start: '2026-07-01', end: '2026-07-31' };
+  var promoWindow = { start: '2026-07-01', end: '2026-07-05' };   // no `month` — sub-month
+
+  t.ok('a monthly row IS matched by its own month',
+    rowsInPeriod_(monthRow, wholeMonth).length === 1);
+  t.ok('a monthly row is NOT matched by a sub-month window',
+    rowsInPeriod_(monthRow, promoWindow).length === 0,
+    'matched ' + rowsInPeriod_(monthRow, promoWindow).length + ' row(s) — a promo would absorb a ' +
+    'whole month of spend');
+  t.ok('a monthly row is NOT matched by a different month',
+    rowsInPeriod_(monthRow, { month: '2026-06', start: '2026-06-01', end: '2026-06-30' }).length === 0);
+  t.ok('a daily row IS still matched by a sub-month window',
+    rowsInPeriod_(dayRow, promoWindow).length === 1);
+
+  // Promo windows read Triple Whale, not the engine, so monthly rows cannot reach
+  // them at all. Belt and braces: the assertions above hold even if that changes.
+  var monthlyRows = 0;
+  for (var mi = 0; mi < ctx.engRows.length; mi++) if (ctx.engRows[mi].grain === 'month') monthlyRows++;
+  if (monthlyRows) {
+    t.note(monthlyRows + ' engine row(s) are whole-month totals (Bing history). They contribute to ' +
+      'the month tables and are invisible to promo windows, by design.');
+  }
 
   // Per-channel combination: a channel the engine misses must not have its cost
   // dropped while its Triple Whale revenue is kept.
@@ -3260,10 +3627,23 @@ function checkRatiosHaveComponents_(t, ctx) {
 
 // ============================== F · CAMPAIGN MAP ===========================
 
-function checkCampaignMap_(t) {
+function checkCampaignMap_(t, ctx) {
   t.section('F · Campaign Map integrity');
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(MAP_SHEET);
-  if (!sheet || sheet.getLastRow() < 2) { t.ok(MAP_SHEET + ' populated', false, 'empty — run Build report'); return; }
+  var noData = !ctx.twCoverage.current && !ctx.engCoverage.current;
+
+  if (!sheet || sheet.getLastRow() < 2) {
+    // An empty map is CORRECT when the report month has no campaigns in it. Only
+    // an empty map for a month that does have data means something went wrong.
+    if (noData) {
+      t.note(MAP_SHEET + ' is empty because ' + ctx.periods.current.label + ' has no data from ' +
+        'either source — expected, not a failure.');
+    } else {
+      t.ok(MAP_SHEET + ' populated', false, 'empty, but ' + ctx.periods.current.label +
+        ' has data — run Build report');
+    }
+    return;
+  }
 
   var vals = sheet.getRange(2, 1, sheet.getLastRow() - 1, MAP_HEADER.length).getValues();
   var seen = {}, dupes = [], badTactic = [], badBrand = [];
@@ -3336,7 +3716,10 @@ function onOpen() {
     .addSeparator()
     .addSubMenu(ui.createMenu('Setup')
       .addItem('First-run check (verify config + sources)', 'firstRunCheck')
-      .addItem('Create the manual input tabs', 'createInputTabs'))
+      .addItem('Create the manual input tabs', 'createInputTabs')
+      .addSeparator()
+      .addItem('Set up the Bing webhook', 'setupBingWebhook')
+      .addItem('Bing webhook status', 'bingWebhookStatus'))
     .addSubMenu(ui.createMenu('Automation')
       .addItem('Set up / repair monthly run', 'setupAutomation')
       .addItem('Automation status', 'automationStatus')

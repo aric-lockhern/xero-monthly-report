@@ -145,7 +145,9 @@ function readEngineDays_() {
   // Automated feed plus any hand-imported history. The manual tab is read second
   // but is not special-cased: a Microsoft Ads month imported by hand and a Google
   // Ads month written by the script are the same kind of row from here on.
-  var raw = readEngineTab_(ENGINE_DAY_SHEET).concat(readEngineTab_(ENGINE_MANUAL_SHEET));
+  var raw = readEngineTab_(ENGINE_DAY_SHEET)
+    .concat(readEngineTab_(ENGINE_MANUAL_SHEET))
+    .concat(readEngineTab_(ENGINE_BING_SHEET));
   var rows = [], types = {};
 
   for (var i = 0; i < raw.length; i++) {
@@ -163,6 +165,9 @@ function readEngineDays_() {
 
     rows.push({
       date: date, channel: channel, campaign: campaign,
+      // 'month' means this row is a whole-month total, not a single day. Matched
+      // by month rather than by date range — see rowsInPeriod_.
+      grain: String(r.grain || 'day').toLowerCase() === 'month' ? 'month' : 'day',
       spend:          num_(r.cost),
       impressions:    impr,
       clicks:         num_(r.clicks),
@@ -187,14 +192,40 @@ function readEngineDays_() {
 
 // ============================== PERIOD FILTERING ===========================
 
-/** Rows whose date falls inside a { start, end } month window (inclusive). */
+/**
+ * Rows belonging to a period.
+ *
+ * Daily rows match on the inclusive date range. MONTHLY rows — whole-month
+ * totals, dated the 1st as a key — match only when the period IS that month.
+ *
+ * That distinction is load-bearing. A monthly total dated the 1st would
+ * otherwise be pulled, in full, into any narrower window containing the 1st: a
+ * five-day promo starting on the 1st would absorb an entire month of Bing spend
+ * and report a catastrophic promo ROAS. Monthly rows are deliberately invisible
+ * to sub-month windows rather than approximated into them.
+ */
 function rowsInPeriod_(rows, period) {
   var out = [];
+  var periodMonth = period.month ||
+    (period.start === firstOfMonth_(period.start) && period.end === lastOfMonth_(period.start)
+      ? period.start.slice(0, 7) : '');
+
   for (var i = 0; i < rows.length; i++) {
-    var d = rows[i].date;
-    if (d >= period.start && d <= period.end) out.push(rows[i]);
+    var r = rows[i];
+    if (r.grain === 'month') {
+      if (periodMonth && r.date.slice(0, 7) === periodMonth) out.push(r);
+    } else if (r.date >= period.start && r.date <= period.end) {
+      out.push(r);
+    }
   }
   return out;
+}
+
+function firstOfMonth_(ds) { return String(ds).slice(0, 7) + '-01'; }
+
+function lastOfMonth_(ds) {
+  var y = Number(String(ds).slice(0, 4)), m = Number(String(ds).slice(5, 7));
+  return Utilities.formatDate(new Date(y, m, 0), tz_(), 'yyyy-MM-dd');
 }
 
 function isAdsChannel_(ch)    { return TW_ADS_CHANNELS.indexOf(ch) !== -1; }
