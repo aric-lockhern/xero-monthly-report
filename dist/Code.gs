@@ -1376,6 +1376,20 @@ function buildReportContext_() {
     unclassified:    bagsFor(function (r) { return r.cls.deckGroup === 'OTHER' || r.cls.brand === 'UNKNOWN'; }),
   };
 
+  // One bag per channel, so the report can show Google vs Microsoft explicitly.
+  // Without this there is no channel breakout anywhere in the deck or the Report
+  // tab — the deck splits by tactic and brand only — and "is Bing actually in
+  // these numbers?" becomes unanswerable without reading the source data.
+  var adsChannels = {};
+  ['current', 'prior', 'yoy'].forEach(function (p) {
+    channelCoverage[p].engine.forEach(function (c) { adsChannels[c] = true; });
+    channelCoverage[p].triplewhale.forEach(function (c) { adsChannels[c] = true; });
+  });
+  var channelSegments = {};
+  Object.keys(adsChannels).sort().forEach(function (ch) {
+    channelSegments[ch] = bagsFor(function (r) { return r.channel === ch; });
+  });
+
   // ChatGPT Ads is Triple Whale only — OpenAI has no engine tab here.
   var chatgpt = {};
   ['current', 'prior', 'yoy'].forEach(function (p) {
@@ -1389,7 +1403,7 @@ function buildReportContext_() {
     twMeta: tw,
     twCoverage: twCoverage, engCoverage: engCoverage, channelCoverage: channelCoverage,
     frontSource: frontSource,
-    segments: segments, chatgpt: chatgpt,
+    segments: segments, channelSegments: channelSegments, chatgpt: chatgpt,
     mapRows: campaignMapRows_(twAds, eng.rows, periods.current),
     warnings: coverageWarnings_(twCoverage, engCoverage, channelCoverage, periods, tw, segments),
   };
@@ -1688,6 +1702,7 @@ function renderReportTab_(ctx) {
   if (ctx.warnings.length) w.lines(ctx.warnings.map(function (s) { return '⚠  ' + s; }), '#b45309');
 
   renderKpiBlock_(w, ctx);
+  renderChannelBlock_(w, ctx);
   renderMainTables_(w, ctx);
   renderProductBlock_(w, ctx);
   renderImpressionShareBlocks_(w, ctx);
@@ -1731,6 +1746,74 @@ function renderKpiBlock_(w, ctx) {
     rows: [values, moms],
     colFormats: [null, kpis[0][2], kpis[1][2], kpis[2][2], kpis[3][2]],
     rowFormats: [null, PCT_FORMAT],
+  });
+}
+
+// ---- channel breakout (not a deck slide — a visibility and QA block) ----
+
+/**
+ * Google vs Microsoft, side by side, with the front-end source named per channel.
+ *
+ * The deck never breaks out by channel — slides 4-7 split by tactic and brand —
+ * so without this there is no way to confirm from the report that Microsoft spend
+ * is in the blended total at all. It also makes the two failure modes that would
+ * silently drop a channel visible: a channel missing from this block is missing
+ * from every table above it, and a channel whose Source says "triplewhale" is one
+ * the engine feed is not covering yet.
+ */
+function renderChannelBlock_(w, ctx) {
+  var cols = tableColumns_();
+  var header = ['Channel', 'Front-end source', '% of cost']
+    .concat(cols.map(function (c) { return c[0]; }));
+
+  var channels = Object.keys(ctx.channelSegments);
+  var blendedCost = num_(derive_(ctx.segments.blended.current).cost);
+  var rows = [];
+
+  for (var i = 0; i < channels.length; i++) {
+    var ch = channels[i];
+    var bag = ctx.channelSegments[ch].current;
+    var m = derive_(bag);
+    if (!bag._rows) continue;
+    var row = [ch, bag._frontSource || 'none', div_(num_(m.cost), blendedCost)];
+    for (var c = 0; c < cols.length; c++) row.push(m[cols[c][1]]);
+    rows.push(row);
+  }
+  rows.sort(function (a, b) { return num_(b[2]) - num_(a[2]); });
+
+  // A TOTAL row that must equal slide 4, computed from the blended bag rather
+  // than by adding the rows above — so a mismatch is visible instead of hidden by
+  // the arithmetic agreeing with itself.
+  var blended = derive_(ctx.segments.blended.current);
+  var totalRow = ['TOTAL (= slide 4)', ctx.segments.blended.current._frontSource || 'none', 1];
+  for (var t = 0; t < cols.length; t++) totalRow.push(blended[cols[t][1]]);
+  rows.push(totalRow);
+
+  var engineOnly = [], twOnly = [];
+  for (var k = 0; k < channels.length; k++) {
+    var src = ctx.channelSegments[channels[k]].current._frontSource;
+    if (src === 'engine') engineOnly.push(channels[k]);
+    else if (src === 'triplewhale') twOnly.push(channels[k]);
+  }
+
+  w.block({
+    name: 'RPT_CHANNEL', title: 'Channel breakout — Google vs Microsoft',
+    note: 'Not a deck slide. The deck splits by tactic and brand, never by channel, so this block ' +
+      'exists to answer "is Microsoft in these numbers?" — it is, wherever a bing row appears.  ' +
+      (engineOnly.length ? 'Front end from the engine: ' + engineOnly.join(', ') + '.  ' : '') +
+      (twOnly.length ? 'Front end from Triple Whale (no engine feed yet): ' + twOnly.join(', ') +
+        ' — set up the Microsoft Advertising Script to move these onto the engine spine, which is ' +
+        'also what gives them %YoY history. See docs/GAPS.md §8.  ' : '') +
+      'ChatGPT Ads is excluded here and on slide 4 — it is a test channel with its own slide (13).',
+    header: header,
+    rows: rows,
+    colFormats: [null, null, '0.0%'].concat(cols.map(function (c) { return c[2]; })),
+    rowFormats: (function () {
+      var f = [];
+      for (var r = 0; r < rows.length - 1; r++) f.push(null);
+      f.push(null);   // TOTAL row keeps column formats; bolding is not available here
+      return f;
+    })(),
   });
 }
 
@@ -2330,6 +2413,13 @@ function ensureInputTabs_() {
  * The deck is validated before anything is written: if a table's shape doesn't
  * match the block that feeds it, that table is SKIPPED and reported, rather than
  * half-filled.
+ *
+ * THE TEMPLATE IS NEVER MODIFIED. writeDeck_ calls makeCopy() and every write
+ * goes to the copy; the template is only ever read. The two functions that open
+ * the template directly — firstRunCheck and diagValidateDeck — only inspect it
+ * (getSlides, getTables, getNumRows) and never saveAndClose. There is also an
+ * explicit id check below, so the invariant is enforced rather than merely
+ * intended.
  */
 
 /**
@@ -2383,6 +2473,15 @@ function writeDeck_(ctx) {
   var copy = DECK_OUTPUT_FOLDER_ID
     ? templateFile.makeCopy(name, DriveApp.getFolderById(DECK_OUTPUT_FOLDER_ID))
     : templateFile.makeCopy(name);
+
+  // Belt and braces on the one thing that must never happen. Everything below
+  // writes, so if this were ever the template rather than a copy we would be
+  // overwriting the master — and the damage is silent, because a filled deck
+  // looks fine until next month when the placeholders are gone.
+  if (copy.getId() === DECK_TEMPLATE_ID) {
+    throw new Error('Refusing to write: the copy resolved to the same file id as DECK_TEMPLATE_ID. ' +
+      'The template must never be modified.');
+  }
 
   var deck = SlidesApp.openById(copy.getId());
   var slides = deck.getSlides();
@@ -3352,6 +3451,42 @@ function checkSpine_(t, ctx) {
         'got ' + fmtNum_(d.cost));
     }
   });
+
+  // CHANNELS MUST PARTITION THE BLENDED TOTAL. If a channel were ever dropped —
+  // by a classifier change, a coverage bug, or a channel id that stopped matching
+  // TW_ADS_CHANNELS — every table would still render and still be internally
+  // consistent, just quietly missing that channel's spend. This is the assertion
+  // that notices.
+  ['current', 'prior', 'yoy'].forEach(function (pk) {
+    var b = derive_(ctx.segments.blended[pk]);
+    if (b.cost === null) return;
+    var chans = Object.keys(ctx.channelSegments);
+    ['cost', 'impressions', 'clicks', 'tw_revenue'].forEach(function (metric) {
+      var sum = 0;
+      for (var i = 0; i < chans.length; i++) sum += num_(derive_(ctx.channelSegments[chans[i]][pk])[metric]);
+      t.near(pk + ': channels sum to Blended ' + metric, sum, num_(b[metric]));
+    });
+  });
+  t.note('channels present: ' + Object.keys(ctx.channelSegments).join(', ') +
+    '  (ChatGPT Ads is reported separately on slide 13)');
+
+  // NO CHANNEL MAY BE SILENTLY EXCLUDED.
+  //
+  // The partition check above cannot catch this: remove a channel from
+  // TW_ADS_CHANNELS and it vanishes from blended AND from the channel list, so the
+  // sums still close perfectly while real spend has left the report entirely.
+  // The only way to notice is to compare config against what the SOURCE holds.
+  var sourceChannels = {};
+  for (var si = 0; si < ctx.twMeta.rows.length; si++) sourceChannels[ctx.twMeta.rows[si].channel] = true;
+  for (var ei = 0; ei < ctx.engRows.length; ei++) sourceChannels[ctx.engRows[ei].channel] = true;
+
+  var orphaned = Object.keys(sourceChannels).filter(function (ch) {
+    return ch && TW_ADS_CHANNELS.indexOf(ch) === -1 && TW_OPENAI_CHANNELS.indexOf(ch) === -1;
+  });
+  t.ok('every channel in the source data is claimed by Config.gs',
+    orphaned.length === 0,
+    'these carry spend but appear in neither TW_ADS_CHANNELS nor TW_OPENAI_CHANNELS, so they are ' +
+    'excluded from every table: ' + orphaned.join(', '));
 
   // MONTHLY-GRAIN SAFETY. Microsoft Advertising Scripts have no report query
   // surface, so Bing history arrives as whole-month totals dated the 1st. Such a

@@ -17,6 +17,13 @@
  * The deck is validated before anything is written: if a table's shape doesn't
  * match the block that feeds it, that table is SKIPPED and reported, rather than
  * half-filled.
+ *
+ * THE TEMPLATE IS NEVER MODIFIED. writeDeck_ calls makeCopy() and every write
+ * goes to the copy; the template is only ever read. The two functions that open
+ * the template directly — firstRunCheck and diagValidateDeck — only inspect it
+ * (getSlides, getTables, getNumRows) and never saveAndClose. There is also an
+ * explicit id check below, so the invariant is enforced rather than merely
+ * intended.
  */
 
 /**
@@ -70,6 +77,15 @@ function writeDeck_(ctx) {
   var copy = DECK_OUTPUT_FOLDER_ID
     ? templateFile.makeCopy(name, DriveApp.getFolderById(DECK_OUTPUT_FOLDER_ID))
     : templateFile.makeCopy(name);
+
+  // Belt and braces on the one thing that must never happen. Everything below
+  // writes, so if this were ever the template rather than a copy we would be
+  // overwriting the master — and the damage is silent, because a filled deck
+  // looks fine until next month when the placeholders are gone.
+  if (copy.getId() === DECK_TEMPLATE_ID) {
+    throw new Error('Refusing to write: the copy resolved to the same file id as DECK_TEMPLATE_ID. ' +
+      'The template must never be modified.');
+  }
 
   var deck = SlidesApp.openById(copy.getId());
   var slides = deck.getSlides();

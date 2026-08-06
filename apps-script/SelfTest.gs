@@ -269,6 +269,42 @@ function checkSpine_(t, ctx) {
     }
   });
 
+  // CHANNELS MUST PARTITION THE BLENDED TOTAL. If a channel were ever dropped —
+  // by a classifier change, a coverage bug, or a channel id that stopped matching
+  // TW_ADS_CHANNELS — every table would still render and still be internally
+  // consistent, just quietly missing that channel's spend. This is the assertion
+  // that notices.
+  ['current', 'prior', 'yoy'].forEach(function (pk) {
+    var b = derive_(ctx.segments.blended[pk]);
+    if (b.cost === null) return;
+    var chans = Object.keys(ctx.channelSegments);
+    ['cost', 'impressions', 'clicks', 'tw_revenue'].forEach(function (metric) {
+      var sum = 0;
+      for (var i = 0; i < chans.length; i++) sum += num_(derive_(ctx.channelSegments[chans[i]][pk])[metric]);
+      t.near(pk + ': channels sum to Blended ' + metric, sum, num_(b[metric]));
+    });
+  });
+  t.note('channels present: ' + Object.keys(ctx.channelSegments).join(', ') +
+    '  (ChatGPT Ads is reported separately on slide 13)');
+
+  // NO CHANNEL MAY BE SILENTLY EXCLUDED.
+  //
+  // The partition check above cannot catch this: remove a channel from
+  // TW_ADS_CHANNELS and it vanishes from blended AND from the channel list, so the
+  // sums still close perfectly while real spend has left the report entirely.
+  // The only way to notice is to compare config against what the SOURCE holds.
+  var sourceChannels = {};
+  for (var si = 0; si < ctx.twMeta.rows.length; si++) sourceChannels[ctx.twMeta.rows[si].channel] = true;
+  for (var ei = 0; ei < ctx.engRows.length; ei++) sourceChannels[ctx.engRows[ei].channel] = true;
+
+  var orphaned = Object.keys(sourceChannels).filter(function (ch) {
+    return ch && TW_ADS_CHANNELS.indexOf(ch) === -1 && TW_OPENAI_CHANNELS.indexOf(ch) === -1;
+  });
+  t.ok('every channel in the source data is claimed by Config.gs',
+    orphaned.length === 0,
+    'these carry spend but appear in neither TW_ADS_CHANNELS nor TW_OPENAI_CHANNELS, so they are ' +
+    'excluded from every table: ' + orphaned.join(', '));
+
   // MONTHLY-GRAIN SAFETY. Microsoft Advertising Scripts have no report query
   // surface, so Bing history arrives as whole-month totals dated the 1st. Such a
   // row must be matched by MONTH and never by date range — otherwise a five-day
