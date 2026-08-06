@@ -119,9 +119,9 @@ function refreshProductImages() {
 
   var res;
   try {
-    res = UrlFetchApp.fetch(PRODUCT_FEED_URL, { muteHttpExceptions: true, followRedirects: true });
+    res = fetchFeed_(PRODUCT_FEED_URL);
   } catch (e) {
-    tell_('Could not fetch the feed', 'PRODUCT_FEED_URL could not be reached.\n\n' + e.message);
+    tell_('Could not fetch the feed', feedFetchHelp_(e));
     return;
   }
   if (res.getResponseCode() !== 200) {
@@ -162,6 +162,45 @@ function refreshProductImages() {
     'Next: Build report + generate deck. Slide 11 will fill any frame it can match by item id, then ' +
     'by exact title. An unmatched product keeps its placeholder rather than borrowing another ' +
     'product\'s photo.');
+}
+
+function fetchFeed_(url) {
+  return UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true });
+}
+
+/**
+ * Turn a fetch failure into something actionable.
+ *
+ * The missing-scope case is worth special-casing because the message Google gives
+ * is accurate but tells you nothing about what to actually do, and it is the
+ * failure everyone hits first: the project was authorised BEFORE the code
+ * contained any UrlFetchApp call, so the stored grant has no external_request
+ * scope and Apps Script does not re-prompt on its own.
+ */
+function feedFetchHelp_(e) {
+  var msg = String(e && e.message || e);
+
+  if (/permission to call UrlFetchApp|script\.external_request/i.test(msg)) {
+    return 'This script is not yet authorised to make external requests, so it cannot fetch the ' +
+      'feed.\n\n' + msg + '\n\n' +
+      'WHY: the project was authorised before its code contained any UrlFetchApp call, so the ' +
+      'stored permission grant does not include the external-request scope — and Apps Script will ' +
+      'not re-prompt from a menu click.\n\n' +
+      'FIX (about 30 seconds):\n' +
+      '  1. Extensions → Apps Script\n' +
+      '  2. In the function dropdown at the top, choose  refreshProductImages\n' +
+      '  3. Click  Run\n' +
+      '  4. Authorise when prompted — Advanced → Go to … (unsafe) → Allow.\n' +
+      '     The consent screen will now list "Connect to an external service".\n' +
+      '  5. Come back here and run Setup → Refresh product images again.\n\n' +
+      'Running from the editor is what forces the re-consent; a menu click cannot.';
+  }
+
+  if (/DNS|Address unavailable|host/i.test(msg)) {
+    return 'The feed host could not be resolved.\n\n' + msg + '\n\nCheck the URL for a typo.';
+  }
+
+  return 'PRODUCT_FEED_URL could not be reached.\n\n' + msg;
 }
 
 /** Google Shopping RSS: <item><g:id>…</g:id><g:image_link>…</g:image_link></item> */
@@ -332,4 +371,133 @@ function productImageStatus() {
     'hand and it will stick (manual rows survive every refresh).');
 
   tell_('Product image status', lines.join('\n'));
+}
+
+
+// ============================== FEED DIAGNOSTIC ============================
+
+/**
+ * Report what the feed actually looks like, without trying to parse it into the
+ * tab.
+ *
+ * This exists because the parser has to guess at a structure that varies between
+ * feed generators — namespaced vs. plain <title>, <item> vs. <entry>, id under
+ * <g:id> vs. <g:mpn> vs. a plain <id>. Rather than iterate blind, this prints the
+ * first product's element names verbatim so a mismatch is visible in one look.
+ */
+function diagnoseProductFeed() {
+  applySettings_();
+  if (!PRODUCT_FEED_URL) {
+    tell_('No feed URL set', 'Set PRODUCT_FEED_URL on the "' + SETTINGS_SHEET + '" tab first.');
+    return;
+  }
+
+  var res;
+  try { res = fetchFeed_(PRODUCT_FEED_URL); }
+  catch (e) { tell_('Could not fetch the feed', feedFetchHelp_(e)); return; }
+
+  var code = res.getResponseCode();
+  var body = res.getContentText();
+  var lines = [
+    'URL      ' + PRODUCT_FEED_URL,
+    'HTTP     ' + code,
+    'Size     ' + Math.round(body.length / 1024) + ' KB',
+    '',
+  ];
+
+  if (code !== 200) {
+    lines.push('The feed did not return 200, so nothing else can be checked.');
+    lines.push('First 400 characters:');
+    lines.push(body.slice(0, 400));
+    tell_('Feed diagnostic', lines.join('\n'));
+    return;
+  }
+
+  var looksXml = /^\s*<\?xml|^\s*<rss|^\s*<feed/i.test(body);
+  lines.push('Format   ' + (looksXml ? 'XML' : (body.indexOf('\t') !== -1 ? 'TSV (tab-delimited)' : 'CSV or plain text')));
+
+  if (!looksXml) {
+    var firstLine = body.split(/\r?\n/)[0] || '';
+    var delim = body.indexOf('\t') !== -1 ? '\t' : ',';
+    var header = splitLine_(firstLine, delim).map(function (h) { return String(h).trim(); });
+    lines.push('');
+    lines.push('Columns (' + header.length + '):');
+    lines.push('  ' + header.join(' | '));
+    lines.push('');
+    lines.push('Looking for an id column among: id, item_id, offer_id, sku');
+    lines.push('Looking for an image column among: image_link, image link, image, image_url, image src');
+    tell_('Feed diagnostic', lines.join('\n'));
+    return;
+  }
+
+  // ---- XML: report the real element names ----
+  var doc;
+  try { doc = XmlService.parse(body); }
+  catch (e) {
+    lines.push('');
+    lines.push('XML PARSE FAILED: ' + e.message);
+    lines.push('');
+    lines.push('First 400 characters:');
+    lines.push(body.slice(0, 400));
+    tell_('Feed diagnostic', lines.join('\n'));
+    return;
+  }
+
+  var root = doc.getRootElement();
+  lines.push('Root     <' + root.getName() + '>');
+
+  var nsList = [];
+  try {
+    nsList.push('default: ' + (root.getNamespace().getURI() || '(none)'));
+    var g = root.getNamespace('g');
+    if (g) nsList.push('g: ' + g.getURI());
+  } catch (e) {}
+  lines.push('Namespaces  ' + (nsList.join('   ') || '(none found)'));
+
+  var channel = root.getChild('channel');
+  var items = channel ? channel.getChildren('item') : [];
+  var itemTag = 'item (under <channel>)';
+  if (!items.length) { items = root.getChildren('item'); itemTag = 'item (at root)'; }
+  if (!items.length) { items = root.getChildren('entry'); itemTag = 'entry'; }
+  if (!items.length) { items = root.getChildren(); itemTag = 'first-level children (fallback)'; }
+
+  lines.push('Products ' + items.length + '   as <' + itemTag + '>');
+
+  if (items.length) {
+    var first = items[0];
+    var kids = first.getChildren();
+    lines.push('');
+    lines.push('FIRST PRODUCT — ' + kids.length + ' element(s):');
+    for (var i = 0; i < kids.length && i < 40; i++) {
+      var k = kids[i];
+      var prefix = '';
+      try { prefix = k.getNamespace().getPrefix(); } catch (e) {}
+      var val = String(k.getText() || '').trim();
+      lines.push('  <' + (prefix ? prefix + ':' : '') + k.getName() + '>  ' +
+        (val.length > 90 ? val.slice(0, 90) + '…' : val));
+    }
+
+    // What the parser would actually extract.
+    var gns = XmlService.getNamespace('http://base.google.com/ns/1.0');
+    var id = childText_(first, 'id', gns) || childText_(first, 'id', null);
+    var title = childText_(first, 'title', gns) || childText_(first, 'title', null);
+    var img = childText_(first, 'image_link', gns) || childText_(first, 'image_link', null);
+    lines.push('');
+    lines.push('WHAT THE PARSER EXTRACTS FROM IT:');
+    lines.push('  id          ' + (id || '(nothing found)'));
+    lines.push('  title       ' + (title ? title.slice(0, 70) : '(nothing found)'));
+    lines.push('  image_link  ' + (img ? img.slice(0, 90) : '(nothing found)'));
+    lines.push('');
+    lines.push(img
+      ? '✓ Images are readable. Run Setup → Refresh product images.'
+      : '✗ No image_link found. Send me the element list above and I will fix the parser.');
+    if (id) {
+      lines.push('');
+      lines.push('NOTE: slide 11 matches on this id against the item id in the Google Ads report. ' +
+        'If the two use different formats, matching falls back to the exact product title — and ' +
+        'Setup → Product image status will show which products resolved.');
+    }
+  }
+
+  tell_('Feed diagnostic', lines.join('\n'));
 }
