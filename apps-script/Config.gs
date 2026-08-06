@@ -28,9 +28,14 @@ var AGENCY_NAME = 'Lockhern Digital';
 // project reads its hidden `_store` tab directly (raw summed components, one row
 // per Date × Channel × Campaign) and never re-queries the Triple Whale API.
 //
-// Paste the spreadsheet ID from its URL:
-//   docs.google.com/spreadsheets/d/  <THIS PART>  /edit
-var TW_SPREADSHEET_ID = '';             // REQUIRED
+// The spreadsheet ID is the part of its URL between /d/ and /edit.
+//
+//   US  "Xero | US | TripleWhale | v2"  1TK1xPqrwf4Zr1_DA7GcYVDf-sXKKagla-sS_hs631Cs
+//   EU  "Xero | EU | TripleWhale | v2"  1Qf-YpWXlOLUhSdLE6E1PZ1W37lDH1JPbc-ancEF5w8w
+//
+// Set this to the one matching REGION above. It is an identifier, not a
+// credential — access is governed by Drive sharing, so it is safe in git.
+var TW_SPREADSHEET_ID = '1TK1xPqrwf4Zr1_DA7GcYVDf-sXKKagla-sS_hs631Cs';   // US
 var TW_STORE_SHEET    = '_store';
 
 // Triple Whale channel ids, as they appear in the `Channel` column of `_store`.
