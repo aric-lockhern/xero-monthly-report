@@ -14,6 +14,35 @@
  * telling a client revenue collapsed when really a backfill just hadn't run.
  */
 
+/**
+ * WHICH SOURCE OWNS WHICH COMPONENT
+ * -----------------------------------------------------------------------------
+ * Google Ads and Microsoft Ads are the SPINE. They own everything the platforms
+ * measure directly — spend, impressions, clicks, and the engine's own reported
+ * conversions and value — and they have years of history, so these columns are
+ * real for every month in the backfill.
+ *
+ * Triple Whale is an OVERLAY. It owns only what the pixel attributes: orders,
+ * revenue, new customers, sessions. It covers only the months it has synced.
+ *
+ * The two are combined PER CHANNEL and then summed, never row-by-row. Row-level
+ * joining would need campaign names to match exactly between the engine and
+ * Triple Whale, and they don't: Google Ads reports a campaign's CURRENT name for
+ * all history, while Triple Whale stored whatever the name was on the day it
+ * synced. One rename and the join silently drops a campaign. Both sources
+ * classify into the same segments, so summing per segment is robust to renames.
+ *
+ * Per channel matters for a subtler reason: if the engine feed covers Google but
+ * not Microsoft, taking cost from the engine while taking revenue from Triple
+ * Whale (which includes Microsoft) would divide blended revenue by Google-only
+ * cost and overstate ROAS. Combining per channel means a channel the engine
+ * doesn't cover falls back to Triple Whale for its front end too, so the
+ * numerator and denominator always describe the same spend.
+ */
+var FRONT_COMPONENTS = ['spend', 'impressions', 'clicks', 'eng_conv', 'eng_conv_value',
+                        'is_impr', 'is_eligible'];
+var BACK_COMPONENTS  = ['tw_orders', 'tw_revenue', 'tw_nc_orders', 'tw_nc_revenue', 'sessions'];
+
 // Raw components. These are summed; nothing here is a ratio.
 var COMPONENTS = [
   'spend',            // ad cost
@@ -115,6 +144,82 @@ function sumComponents_(rows) {
   var bag = emptyComponents_();
   for (var i = 0; i < rows.length; i++) addComponents_(bag, rows[i]);
   return bag;
+}
+
+// ============================== SOURCE COMBINATION =========================
+
+/**
+ * Combine one channel's engine bag with its Triple Whale bag, for one period.
+ *
+ * Front-end and engine-reported components come from the engine. Attributed
+ * components come from Triple Whale. Both spend figures are retained so
+ * reconciliation can check that the two sources describe the same program.
+ */
+function combineChannelBags_(engBag, twBag, frontSource) {
+  var out = emptyComponents_();
+  var eng = engBag || emptyComponents_();
+  var tw  = twBag  || emptyComponents_();
+
+  // `frontSource` is decided ONCE PER CHANNEL for the whole period, by the
+  // caller, from the complete row set — never per segment from that segment's own
+  // rows.
+  //
+  // Deciding per segment is subtly wrong. Suppose the engine covers google-ads
+  // but a campaign appears only in Triple Whale (a rename: the engine reports the
+  // new name for all history, Triple Whale stored the old one). At blended level
+  // the engine wins for that channel, so the campaign's spend is excluded — which
+  // is correct, because the engine already reports that spend under the new name,
+  // and adding it would double-count. But a segment containing ONLY that campaign
+  // has no engine rows, so it would fall back to Triple Whale and count the spend
+  // after all. The segments then don't sum to blended, and the Reconciliation
+  // block contradicts itself.
+  //
+  // Fixing the source per channel makes every segment agree. Attributed revenue
+  // is unaffected either way — it always comes from Triple Whale, so a renamed
+  // campaign's revenue is never lost.
+  var frontFromEngine = (frontSource === 'engine');
+  var front = frontFromEngine ? eng : tw;
+
+  for (var i = 0; i < FRONT_COMPONENTS.length; i++) out[FRONT_COMPONENTS[i]] = num_(front[FRONT_COMPONENTS[i]]);
+  for (var j = 0; j < BACK_COMPONENTS.length;  j++) out[BACK_COMPONENTS[j]]  = num_(tw[BACK_COMPONENTS[j]]);
+
+  out._rows        = eng._rows + tw._rows;
+  out._twPresent   = tw._rows > 0;
+  out._hasSessions = !!tw._hasSessions;
+  out._hasIs       = !!front._hasIs;
+  out._frontSource = front._rows ? frontSource : 'none';
+
+  // Diagnostics, not display.
+  out._engRows  = eng._rows;
+  out._twRows   = tw._rows;
+  out._engSpend = eng._rows ? num_(eng.spend) : null;
+  out._twSpend  = tw._rows  ? num_(tw.spend)  : null;
+  return out;
+}
+
+/** Sum already-combined per-channel bags into one bag for the segment. */
+function mergeBags_(bags) {
+  var out = emptyComponents_();
+  var sources = {}, engSpend = null, twSpend = null;
+
+  for (var b = 0; b < bags.length; b++) {
+    var bag = bags[b];
+    if (!bag || !bag._rows) continue;
+    for (var i = 0; i < COMPONENTS.length; i++) out[COMPONENTS[i]] += num_(bag[COMPONENTS[i]]);
+    out._rows        += bag._rows;
+    out._twPresent    = out._twPresent    || bag._twPresent;
+    out._hasSessions  = out._hasSessions  || bag._hasSessions;
+    out._hasIs        = out._hasIs        || bag._hasIs;
+    if (bag._frontSource && bag._frontSource !== 'none') sources[bag._frontSource] = true;
+    if (bag._engSpend !== null && bag._engSpend !== undefined) engSpend = num_(engSpend) + bag._engSpend;
+    if (bag._twSpend  !== null && bag._twSpend  !== undefined) twSpend  = num_(twSpend)  + bag._twSpend;
+  }
+
+  var names = Object.keys(sources);
+  out._frontSource = names.length === 0 ? 'none' : (names.length === 1 ? names[0] : 'mixed');
+  out._engSpend = engSpend;
+  out._twSpend  = twSpend;
+  return out;
 }
 
 // ============================== DERIVATION =================================

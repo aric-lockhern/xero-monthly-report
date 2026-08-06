@@ -142,7 +142,10 @@ function readEngineTab_(name) {
  * used by the classifier.
  */
 function readEngineDays_() {
-  var raw = readEngineTab_(ENGINE_DAY_SHEET);
+  // Automated feed plus any hand-imported history. The manual tab is read second
+  // but is not special-cased: a Microsoft Ads month imported by hand and a Google
+  // Ads month written by the script are the same kind of row from here on.
+  var raw = readEngineTab_(ENGINE_DAY_SHEET).concat(readEngineTab_(ENGINE_MANUAL_SHEET));
   var rows = [], types = {};
 
   for (var i = 0; i < raw.length; i++) {
@@ -171,10 +174,11 @@ function readEngineDays_() {
       is_eligible: hasShare ? impr / share : 0,
     });
 
-    if (r.channel_type) {
+    if (r.channel_type || r.labels) {
       types[classKey_(channel, campaign)] = {
-        channelType: String(r.channel_type),
+        channelType: String(r.channel_type || ''),
         subType: String(r.channel_sub_type || ''),
+        labels: String(r.labels || ''),
       };
     }
   }

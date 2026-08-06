@@ -94,6 +94,19 @@ var TW_SESSION_FIELD = '';
 // the Reconciliation block, and is listed on the `Campaign Map` tab where you
 // can pin it by hand. Manual overrides on that tab always beat these rules.
 
+// Google Ads LABELS are the authoritative brand signal when present — a label
+// survives a campaign rename, which a regex on the name does not. The engine feed
+// exports campaign labels; any label matching a key here (case-insensitive) wins
+// over the name rules below. Applying these three labels in Google Ads is the
+// single highest-value thing you can do to make segmentation robust.
+var BRAND_LABEL_MAP = {
+  'brand':      'BRAND',
+  'non-brand':  'NON_BRAND',
+  'nonbrand':   'NON_BRAND',
+  'competitor': 'COMPETITOR',
+  'conquesting':'COMPETITOR',
+};
+
 // Brand axis. The deck's "Non-Brand" tables include COMPETITOR (conquesting).
 var BRAND_RULES = [
   [/conquest|competitor|\bcomp\b/i,               'COMPETITOR'],
@@ -127,6 +140,11 @@ var DECK_GROUP_OF_TACTIC = {
 // running in the MCC. This project only READS them, so it degrades gracefully:
 // any missing tab renders as an empty, clearly-labelled block.
 var ENGINE_DAY_SHEET     = '_eng_day';       // Date × Campaign engine metrics + impression share
+// Same columns as _eng_day, but NEVER written or cleared by any script. This is
+// where hand-imported engine history goes — most usefully a one-time Microsoft
+// Ads export covering the months before Triple Whale existed. Read alongside
+// _eng_day, so a channel imported here behaves exactly like an automated one.
+var ENGINE_MANUAL_SHEET  = '_eng_manual';
 var ENGINE_PRODUCT_SHEET = '_eng_product';   // product_type_l1 × l2   (slide 8)
 var ENGINE_PMAXCAT_SHEET = '_eng_pmax_cat';  // PMax search categories (slide 10)
 var ENGINE_ITEM_SHEET    = '_eng_item';      // item id × title        (slide 11)

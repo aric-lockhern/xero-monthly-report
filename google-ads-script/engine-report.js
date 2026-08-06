@@ -39,9 +39,17 @@ var CONFIG = {
   // set of tabs would silently add dollars to euros.
   CUSTOMER_IDS: [],
 
-  // How many months of history to (re)write each run. 14 covers the report
-  // month, the prior month, and the same month last year, with a month of slack.
-  MONTHS_BACK: 14,
+  // How many months of daily history to (re)write each run.
+  //
+  // 26 gives two full years plus slack, which is the point of this feed: Google
+  // and Microsoft have years of front-end history, Triple Whale does not, so the
+  // engine is what makes %YoY real.
+  //
+  // HARD CEILING 37. Since June 2026 Google returns a date-range error for
+  // segments.date beyond 37 months; past that you must switch to monthly
+  // segments. main() refuses to run above the ceiling rather than failing
+  // halfway through.
+  MONTHS_BACK: 26,
 
   // Detail reports are heavier than the daily campaign feed. Limit them to the
   // most recent N months — slides 8/10/11 are single-month views, so 3 is plenty
@@ -57,6 +65,12 @@ var CONFIG = {
   TAB_ASSET:    '_eng_asset',
   TAB_STATUS:   '_eng_status',
 
+  // NOT written by this script — listed only so writeTab_ can refuse to touch
+  // it. Hand-imported engine history (e.g. a one-time Microsoft Ads export of
+  // the months before Triple Whale existed) lives here and must survive every
+  // run. Must match ENGINE_MANUAL_SHEET in the Apps Script Config.gs.
+  TAB_MANUAL_NEVER_WRITE: '_eng_manual',
+
   // Rows to keep per detail report, per month, ordered by conversion value.
   TOP_PRODUCT_ROWS: 60,
   TOP_ITEM_ROWS:    40,
@@ -66,12 +80,21 @@ var CONFIG = {
 var CHANNEL = 'google-ads';   // matches the Triple Whale channel id, so the
                               // Apps Script classifier keys line up exactly
 
+// Google's cap on daily-grain history (segments.date), effective June 2026.
+var MAX_DAILY_MONTHS = 37;
+
 // ============================== ENTRY POINT ================================
 
 function main() {
   if (!CONFIG.SPREADSHEET_ID) {
     throw new Error('CONFIG.SPREADSHEET_ID is empty. Paste the id of the monthly report ' +
       'spreadsheet (from its URL, between /d/ and /edit).');
+  }
+
+  if (CONFIG.MONTHS_BACK > MAX_DAILY_MONTHS) {
+    throw new Error('CONFIG.MONTHS_BACK is ' + CONFIG.MONTHS_BACK + ', above Google\'s ' +
+      MAX_DAILY_MONTHS + '-month limit for segments.date (effective June 2026). Requests beyond ' +
+      'that return a date-range error. Lower it, or rewrite the queries to use segments.month.');
   }
 
   var ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
@@ -157,7 +180,7 @@ function normalizeId_(id) { return String(id).replace(/-/g, '').replace(/^(\d{3}
 // ============================== REPORT: CAMPAIGN × DAY =====================
 
 var HEADER_DAY = ['date', 'channel', 'account', 'campaign_id', 'campaign',
-                  'channel_type', 'channel_sub_type', 'impressions', 'clicks', 'cost',
+                  'channel_type', 'channel_sub_type', 'labels', 'impressions', 'clicks', 'cost',
                   'conversions', 'conversions_value', 'search_impression_share'];
 
 /**
@@ -169,6 +192,20 @@ var HEADER_DAY = ['date', 'channel', 'account', 'campaign_id', 'campaign',
  * the kind of request that fails the whole query rather than returning nulls.
  */
 function fetchCampaignDays_(range, acc) {
+  // Campaign labels, fetched once per account. A label is attached to the
+  // campaign so it survives a rename, which makes it a far better brand signal
+  // than a regex on the name. Applied by the Apps Script classifier via
+  // BRAND_LABEL_MAP; a campaign with no mapped label falls back to name rules.
+  var labelsFor = {};
+  try {
+    eachRow_('SELECT campaign.id, label.name FROM campaign_label', function (r) {
+      var id = String(r.campaign.id);
+      (labelsFor[id] || (labelsFor[id] = [])).push(String(r.label.name));
+    });
+  } catch (e) {
+    Logger.log('Campaign label query failed (brand falls back to name rules): ' + e.message);
+  }
+
   var base = 'SELECT segments.date, campaign.id, campaign.name, ' +
     'campaign.advertising_channel_type, campaign.advertising_channel_sub_type, ' +
     'metrics.impressions, metrics.clicks, metrics.cost_micros, ' +
@@ -183,6 +220,7 @@ function fetchCampaignDays_(range, acc) {
     var row = [
       r.segments.date, CHANNEL, acc.label, String(r.campaign.id), r.campaign.name,
       r.campaign.advertisingChannelType || '', r.campaign.advertisingChannelSubType || '',
+      (labelsFor[String(r.campaign.id)] || []).join('|'),
       n_(r.metrics.impressions), n_(r.metrics.clicks), micros_(r.metrics.costMicros),
       n_(r.metrics.conversions), n_(r.metrics.conversionsValue), '',
     ];
@@ -199,7 +237,7 @@ function fetchCampaignDays_(range, acc) {
   try {
     eachRow_(isQuery, function (r) {
       var row = index[r.segments.date + '||' + r.campaign.id];
-      if (row) row[12] = n_(r.metrics.searchImpressionShare);
+      if (row) row[13] = n_(r.metrics.searchImpressionShare);   // last column of HEADER_DAY
     });
   } catch (e) {
     Logger.log('Impression share query failed (slide 9 will be empty): ' + e.message);
@@ -398,6 +436,10 @@ function dateRange_(monthsBack) {
 // ============================== SHEET I/O ==================================
 
 function writeTab_(ss, name, header, rows) {
+  if (name === CONFIG.TAB_MANUAL_NEVER_WRITE) {
+    throw new Error('Refusing to write "' + name + '" — it holds hand-imported history that no ' +
+      'script may overwrite.');
+  }
   var sheet = ss.getSheetByName(name) || ss.insertSheet(name);
   sheet.clear();
   sheet.getRange(1, 1, 1, header.length).setValues([header]).setFontWeight('bold');

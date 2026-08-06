@@ -38,6 +38,7 @@ function selfTestReport_() {
 
   checkDeckContract_(t);
   checkShapes_(t);
+  checkSpine_(t, ctx);
   checkPartitions_(t, ctx);
   checkWrittenDeltas_(t);
   checkDerivedRatios_(t, ctx);
@@ -172,6 +173,90 @@ function checkDeckContract_(t) {
   t.ok('every deck table is mapped by slidePlan_', unplanned.length === 0, unplanned.join(', '));
 }
 
+// ============================== H · SPINE / SOURCE COMBINATION =============
+
+/**
+ * The engine is the spine; Triple Whale is the overlay. These assertions pin that
+ * relationship, because getting it wrong is silent: every table still renders and
+ * every table is still internally consistent.
+ *
+ * The dangerous case is a per-channel mismatch — engine cost for Google only,
+ * divided into Triple Whale revenue that includes Microsoft. That inflates ROAS
+ * on the headline slide with nothing visibly wrong.
+ */
+function checkSpine_(t, ctx) {
+  t.section('H · Engine spine and Triple Whale overlay');
+
+  var bag = ctx.segments.blended.current;
+
+  // Front end must come from the engine once the backfill has run.
+  if (ctx.engCoverage.current) {
+    t.ok('current month front end comes from the engine',
+      bag._frontSource === 'engine' || bag._frontSource === 'mixed',
+      'is "' + bag._frontSource + '"');
+  } else {
+    t.note('no engine data for the report month — front end falls back to Triple Whale, ' +
+      'which is the documented degraded mode');
+  }
+
+  // Both sources should describe the same program — but only where BOTH cover the
+  // channel. Comparing totals would report a large false "drift" whenever the
+  // engine feed covers fewer channels than Triple Whale, which is the normal
+  // state before a Microsoft feed exists.
+  var engSpend = ctx.channelCoverage.currentEngSpend || {};
+  var twSpend  = ctx.channelCoverage.currentTwSpend  || {};
+  var overlapping = Object.keys(engSpend).filter(function (ch) { return twSpend[ch] !== undefined; });
+
+  if (!overlapping.length) {
+    t.note('no channel is covered by both sources this month, so there is nothing to cross-check');
+  } else {
+    overlapping.forEach(function (ch) {
+      var e = num_(engSpend[ch]), w = num_(twSpend[ch]);
+      if (w <= 0) return;
+      var drift = Math.abs(e - w) / w;
+      t.ok(ch + ': engine cost within 5% of Triple Whale spend', drift < 0.05,
+        fmtNum_(e) + ' vs ' + fmtNum_(w) + '  (' + (drift * 100).toFixed(1) + '%)');
+    });
+  }
+
+  // Blended cost must equal engine cost for engine-covered channels plus Triple
+  // Whale spend for the rest. This is the identity that guarantees the ROAS
+  // denominator describes the same spend as its numerator.
+  var expected = 0;
+  Object.keys(twSpend).forEach(function (ch) {
+    expected += (engSpend[ch] !== undefined) ? num_(engSpend[ch]) : num_(twSpend[ch]);
+  });
+  Object.keys(engSpend).forEach(function (ch) {
+    if (twSpend[ch] === undefined) expected += num_(engSpend[ch]);
+  });
+  t.near('blended cost = engine cost where covered + Triple Whale spend elsewhere',
+    derive_(bag).cost, expected);
+
+  // Attributed columns must be n/a, never 0, in periods Triple Whale misses.
+  ['prior', 'yoy'].forEach(function (p) {
+    if (ctx.twCoverage[p]) return;
+    var d = derive_(ctx.segments.blended[p]);
+    t.ok(p + ': TW Revenue is n/a (no Triple Whale data)', d.tw_revenue === null,
+      'got ' + fmtNum_(d.tw_revenue));
+    if (ctx.engCoverage[p]) {
+      t.ok(p + ': Cost is still real (engine covers it)', d.cost !== null && num_(d.cost) > 0,
+        'got ' + fmtNum_(d.cost));
+    }
+  });
+
+  // Per-channel combination: a channel the engine misses must not have its cost
+  // dropped while its Triple Whale revenue is kept.
+  var cov = ctx.channelCoverage;
+  ['current', 'prior', 'yoy'].forEach(function (p) {
+    var eng = cov[p].engine, tw = cov[p].triplewhale;
+    var twOnly = tw.filter(function (c) { return eng.indexOf(c) === -1; });
+    if (!twOnly.length) return;
+    t.note(p + ': ' + twOnly.join(', ') + ' present in Triple Whale but not the engine — ' +
+      'those channels use Triple Whale for their front end too, so cost and revenue still ' +
+      'describe the same spend');
+  });
+}
+
 // ============================== A · SHAPES =================================
 
 /**
@@ -217,9 +302,30 @@ function checkPartitions_(t, ctx) {
   t.section('B · Segments partition the blended total');
   var periods = ['current', 'prior'];
 
+  // Checked against the COMBINED bags the tables are actually built from, so the
+  // identities hold whichever source supplied the front end.
+  // SEARCH / SHOPPING / OTHER is an exhaustive partition of the tactic axis, so
+  // the three must sum to blended EXACTLY on the combined bags the tables are
+  // built from — no residual gap term.
+  //
+  // This is the check that catches a front-end source chosen per segment instead
+  // of per channel: a campaign present in Triple Whale but not the engine would
+  // then be counted in a narrow segment and excluded from blended, and this sum
+  // would not close.
+  ['current', 'prior', 'yoy'].forEach(function (pk) {
+    var b = derive_(ctx.segments.blended[pk]);
+    if (b.cost === null) { t.note(pk + ': no cost from either source, partition skipped'); return; }
+    ['cost', 'impressions', 'clicks', 'eng_orders', 'eng_revenue', 'tw_revenue', 'tw_orders'].forEach(function (metric) {
+      var parts = ['search', 'shopping', 'other'].reduce(function (acc, seg) {
+        return acc + num_(derive_(ctx.segments[seg][pk])[metric]);
+      }, 0);
+      t.near(pk + ': Search + Shopping + Other = Blended ' + metric, parts, num_(b[metric]));
+    });
+  });
+
   for (var p = 0; p < periods.length; p++) {
     var per = periods[p];
-    if (!ctx.twCoverage[per]) { t.note(per + ': no Triple Whale data, partition checks skipped'); continue; }
+    if (!ctx.twCoverage[per]) { t.note(per + ': no Triple Whale data, row-level partition checks skipped'); continue; }
 
     var rows = rowsInPeriod_(ctx.twAds, ctx.periods[per]);
     var total = 0, byGroup = { SEARCH: 0, SHOPPING: 0, OTHER: 0 };

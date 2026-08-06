@@ -17,27 +17,35 @@
     "come out proportionally smaller and the deltas are non-trivial.",
     "",
     "Campaign names deliberately mirror the real US account so the classifier is",
-    "tested against naming it will actually meet."
+    "tested against naming it will actually meet, and the labels column exercises",
+    "BRAND_LABEL_MAP taking precedence over the name regexes.",
+    "",
+    "Costs are CALIBRATED to the real July 2026 Google Ads spend in the Triple",
+    "Whale export (~$219.7k) and land ~1.8% under it. That is deliberate: the",
+    "self-test cross-checks engine cost against Triple Whale spend per channel,",
+    "so a fixture inventing wildly different numbers would fail that check every",
+    "run and train everyone to ignore it. A couple of percent is realistic drift;",
+    "the check fires above 5%."
   ],
 
   "_eng_day": {
     "header": ["date", "channel", "account", "campaign_id", "campaign", "channel_type",
-               "channel_sub_type", "impressions", "clicks", "cost", "conversions",
+               "channel_sub_type", "labels", "impressions", "clicks", "cost", "conversions",
                "conversions_value", "search_impression_share"],
     "_generate": {
       "months": [[0, 1.0], [-1, 0.92], [-12, 0.68]],
-      "days": 28,
+      "days": 31,
       "rows": [
-        ["$DATE", "google-ads", "Xero US", "1", "LD - Brand - Core", "SEARCH", "STANDARD",
-         {"scale": 11200}, {"scale": 2700}, {"scale": 2100}, {"scale": 186}, {"scale": 24700}, 0.63],
-        ["$DATE", "google-ads", "Xero US", "2", "LD - Shoes - NB", "SEARCH", "STANDARD",
-         {"scale": 9200}, {"scale": 430}, {"scale": 820}, {"scale": 17}, {"scale": 2100}, 0.21],
+        ["$DATE", "google-ads", "Xero US", "1", "LD - Brand - Core", "SEARCH", "STANDARD", "Brand",
+         {"scale": 11300}, {"scale": 2730}, {"scale": 2400}, {"scale": 187}, {"scale": 24800}, 0.63],
+        ["$DATE", "google-ads", "Xero US", "2", "LD - Shoes - NB", "SEARCH", "STANDARD", "Non-Brand",
+         {"scale": 9200}, {"scale": 430}, {"scale": 840}, {"scale": 17}, {"scale": 2100}, 0.21],
         ["$DATE", "google-ads", "Xero US", "3", "LD - Standard Shopping - BR", "SHOPPING",
-         "SHOPPING_PRODUCT_ADS",
-         {"scale": 186000}, {"scale": 2100}, {"scale": 2700}, {"scale": 114}, {"scale": 13600}, 0.44],
+         "SHOPPING_PRODUCT_ADS", "Brand",
+         {"scale": 186000}, {"scale": 2130}, {"scale": 2730}, {"scale": 116}, {"scale": 13800}, 0.44],
         ["$DATE", "google-ads", "Xero US", "4", "LD - PMAX - Top Products - NB - Performance",
-         "PERFORMANCE_MAX", "",
-         {"scale": 61000}, {"scale": 1150}, {"scale": 1100}, {"scale": 41}, {"scale": 4900}, ""]
+         "PERFORMANCE_MAX", "", "Non-Brand",
+         {"scale": 144000}, {"scale": 1190}, {"scale": 989}, {"scale": 41}, {"scale": 4400}, ""]
       ]
     }
   },

@@ -26,32 +26,32 @@ floor (read as 10%).
 
 ---
 
-## 2. `%YoY` is `n/a` until Triple Whale backfills a year
+## 2. `%YoY` — solved for the front end, still limited for attribution
 
-The Triple Whale store currently starts **2026-06-01**, because `BACKFILL_START`
-is pinned there in `ld-x-tw-script`. The deck asks for `% YoY` on slides 4–7 and 13.
+**This changed.** Google Ads and Microsoft Ads are now the SPINE, not enrichment.
+Triple Whale is an overlay for attributed metrics only.
 
-**What happens now:** if Google Ads engine data covers the year-ago month, the
-engine columns of the `% YoY` row are computed from it and the Triple Whale columns
-read `n/a` — with a warning on the Report tab saying so, and noting that Microsoft
-is excluded from that row (the engine feed is Google-only). If neither source
-covers it, the whole row reads `n/a`.
+That means `%YoY` is **real** for every column the platforms measure — impressions,
+clicks, cost, CTR, CPC, engine orders, engine revenue, engine ROAS — as far back as
+the engine backfill reaches (`MONTHS_BACK: 26` in `engine-report.js`, two full
+years).
 
-It never invents a number. That's the point: an engine-only period summing Triple
-Whale revenue to `0` would make `% YoY` claim revenue grew infinitely.
+What is still limited is the **attributed** columns: TW orders, TW revenue, TW CVR,
+TW AOV, TW ROAS. Triple Whale's earliest data is around **May 2026**, with June
+2026 the first complete month. Before that those columns read `n/a`.
 
-**To close it:** in `ld-x-tw-script/Code.gs`, set
+That is the honest answer and the deck shows it plainly: a `%YoY` row with real
+front-end numbers and `n/a` attributed ones, plus a warning saying why.
 
-```js
-var BACKFILL_START = '2025-06-01';   // or earlier
-```
+**Hard ceiling worth knowing:** since June 2026, Google returns a date-range error
+for `segments.date` beyond **37 months**. `engine-report.js` refuses to run above
+that rather than failing halfway. For history older than 37 months you would need
+to switch the queries to `segments.month`.
 
-then run `Triple Whale → Rebuild all data — background` and watch its `_status`
-tab. It's one API call per day of history — roughly 425 days for a year of extra
-depth — so it will span several runs via its own `resumeSync` trigger. Do this
-well before you need the YoY row.
-
-For the engine side, `MONTHS_BACK: 14` in `engine-report.js` already covers it.
+**If you want attributed YoY too:** lower `BACKFILL_START` in `ld-x-tw-script` and
+rebuild. But Triple Whale can only give you what it retained, so ~May 2026 is
+probably the floor regardless of configuration. Treat engine-only YoY as the
+permanent answer for FY2025 comparisons.
 
 ---
 
@@ -139,26 +139,62 @@ placeholder — which is what the deck's own speaker notes tell you to do. Paste
 
 ---
 
-## 8. Microsoft Ads engine detail
+## 8. Microsoft Ads history — the one real remaining gap
 
-Triple Whale gives us Bing spend, clicks, impressions, engine-reported
-conversions and value, and attributed revenue — so Microsoft **is** in the blended
-and Search/Shopping tables.
+Triple Whale gives us Bing spend, clicks, impressions, engine-reported conversions
+and value, and attributed revenue — from **June 2026 onward**. So Microsoft is
+fully present in every table for the months Triple Whale covers.
 
-What's missing is Microsoft-only *detail*: its product taxonomy, its share-of-voice
-data, its asset performance. Slides 8–12 are therefore Google-only, which is
-consistent with the deck's own footnotes ("Engine data").
+The gap is Microsoft history **before** Triple Whale existed. Bing is ~**9%** of US
+spend and ~**11%** of EU spend, so a `%YoY` row without it understates total spend
+by roughly that much. The Report tab says so explicitly, with the percentage
+computed from the current month.
 
-**To close it:** the Microsoft Advertising Reporting API. It needs a developer
-token and OAuth, and its SOAP/bulk-download reporting flow is materially more work
-than the Google Ads Script was. Add it behind the same `_eng_*` tab contract —
-write rows with `channel = 'bing'` and nothing downstream changes.
+Three ways to close it, cheapest first:
 
-Note the one asymmetry this creates: the engine-only `%YoY` fallback (gap 2) is
-Google-only, so it under-reports total spend for that row. The Report tab says so
-in its warning.
+### (a) One-time paste into `_eng_manual` — recommended
 
----
+`_eng_manual` has the same columns as `_eng_day` and **no script ever writes or
+clears it**. `engine-report.js` refuses to touch it by name. Rows there are read
+alongside the automated feed and are indistinguishable downstream.
+
+1. Microsoft Advertising → Reports → Campaign performance
+2. Daily granularity, last 2 years, columns: Impressions, Clicks, Spend,
+   Conversions, Revenue
+3. Export, then paste into `_eng_manual` mapped to these headers:
+
+```
+date | channel | account | campaign_id | campaign | channel_type |
+channel_sub_type | labels | impressions | clicks | cost | conversions |
+conversions_value | search_impression_share
+```
+
+Set `channel` to exactly **`bing`** (matching `TW_ADS_CHANNELS`). Leave
+`campaign_id`, `labels` and `search_impression_share` blank if you don't have them
+— only `date`, `channel`, `campaign` and the metrics are load-bearing.
+
+Fifteen minutes, once, permanently fixes history. Ongoing Bing keeps coming from
+Triple Whale automatically.
+
+### (b) Microsoft Advertising Script
+
+Microsoft Advertising has its own Scripts feature, and it *can* reach Google
+Sheets — but only through the Sheets REST API with an OAuth access or refresh
+token, not a native `SpreadsheetApp`. So it needs a Google Cloud OAuth client and
+a refresh token generated and stored in the Bing script. That auth plumbing is the
+whole cost; the reporting part is easy.
+
+### (c) Microsoft Ads Reporting API from Apps Script
+
+One codebase, in the same place as everything else. Needs a Microsoft developer
+token, an Azure app registration, and a one-time OAuth consent for a refresh
+token. The reporting flow is SOAP: submit a report request, poll for completion,
+download a ZIP, `Utilities.unzip`, parse the CSV. Perhaps 200 lines, and it cannot
+be tested without live credentials.
+
+**Recommendation: (a) now, (c) later if the manual paste ever becomes annoying.**
+Both write the same `_eng_*` shape, so swapping one for the other changes nothing
+downstream — the Apps Script side does not know or care which produced a row.
 
 ## 9. Classification depends on campaign naming
 
@@ -184,11 +220,19 @@ This is genuinely fragile: rename a campaign and a split can move.
   Search while appearing in neither the Brand nor the Non-Brand table, and every
   table still looks internally consistent.
 
-**Best long-term fix:** enforce a naming convention, or apply Google Ads **labels**
-(`Brand` / `Non-Brand` / `Competitor`) and extend `engine-report.js` to export
-`campaign.labels`. Then the brand axis becomes authoritative too. Worth doing —
-the US account already shows the drift (`LD - US - BR - Search - Core` vs.
-`LD - Brand - Core` vs. legacy `brand`).
+**Now partly solved.** `engine-report.js` exports `campaign.labels`, and any label
+matching `BRAND_LABEL_MAP` in `Config.gs` **beats the name regexes**. A label is
+attached to the campaign, so it survives a rename; a regex reads the name, so it
+does not.
+
+**So the highest-value thing you can do in Google Ads** is apply three labels —
+`Brand`, `Non-Brand`, `Competitor` — to every campaign. The brand axis then becomes
+authoritative rather than inferred, and stays correct through any renaming. The US
+account already shows the drift that makes this worth doing:
+`LD - US - BR - Search - Core` vs. `LD - Brand - Core` vs. legacy `brand`.
+
+Campaign *type* is already authoritative from `advertising_channel_type` wherever
+engine data exists.
 
 ---
 

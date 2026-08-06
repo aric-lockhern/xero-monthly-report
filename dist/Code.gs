@@ -118,6 +118,19 @@ var TW_SESSION_FIELD = '';
 // the Reconciliation block, and is listed on the `Campaign Map` tab where you
 // can pin it by hand. Manual overrides on that tab always beat these rules.
 
+// Google Ads LABELS are the authoritative brand signal when present — a label
+// survives a campaign rename, which a regex on the name does not. The engine feed
+// exports campaign labels; any label matching a key here (case-insensitive) wins
+// over the name rules below. Applying these three labels in Google Ads is the
+// single highest-value thing you can do to make segmentation robust.
+var BRAND_LABEL_MAP = {
+  'brand':      'BRAND',
+  'non-brand':  'NON_BRAND',
+  'nonbrand':   'NON_BRAND',
+  'competitor': 'COMPETITOR',
+  'conquesting':'COMPETITOR',
+};
+
 // Brand axis. The deck's "Non-Brand" tables include COMPETITOR (conquesting).
 var BRAND_RULES = [
   [/conquest|competitor|\bcomp\b/i,               'COMPETITOR'],
@@ -151,6 +164,11 @@ var DECK_GROUP_OF_TACTIC = {
 // running in the MCC. This project only READS them, so it degrades gracefully:
 // any missing tab renders as an empty, clearly-labelled block.
 var ENGINE_DAY_SHEET     = '_eng_day';       // Date × Campaign engine metrics + impression share
+// Same columns as _eng_day, but NEVER written or cleared by any script. This is
+// where hand-imported engine history goes — most usefully a one-time Microsoft
+// Ads export covering the months before Triple Whale existed. Read alongside
+// _eng_day, so a channel imported here behaves exactly like an automated one.
+var ENGINE_MANUAL_SHEET  = '_eng_manual';
 var ENGINE_PRODUCT_SHEET = '_eng_product';   // product_type_l1 × l2   (slide 8)
 var ENGINE_PMAXCAT_SHEET = '_eng_pmax_cat';  // PMax search categories (slide 10)
 var ENGINE_ITEM_SHEET    = '_eng_item';      // item id × title        (slide 11)
@@ -202,6 +220,35 @@ function currencyFormat_(decimals) {
  * never 0 and never blank: a zero that means "no data" is how a deck ends up
  * telling a client revenue collapsed when really a backfill just hadn't run.
  */
+
+/**
+ * WHICH SOURCE OWNS WHICH COMPONENT
+ * -----------------------------------------------------------------------------
+ * Google Ads and Microsoft Ads are the SPINE. They own everything the platforms
+ * measure directly — spend, impressions, clicks, and the engine's own reported
+ * conversions and value — and they have years of history, so these columns are
+ * real for every month in the backfill.
+ *
+ * Triple Whale is an OVERLAY. It owns only what the pixel attributes: orders,
+ * revenue, new customers, sessions. It covers only the months it has synced.
+ *
+ * The two are combined PER CHANNEL and then summed, never row-by-row. Row-level
+ * joining would need campaign names to match exactly between the engine and
+ * Triple Whale, and they don't: Google Ads reports a campaign's CURRENT name for
+ * all history, while Triple Whale stored whatever the name was on the day it
+ * synced. One rename and the join silently drops a campaign. Both sources
+ * classify into the same segments, so summing per segment is robust to renames.
+ *
+ * Per channel matters for a subtler reason: if the engine feed covers Google but
+ * not Microsoft, taking cost from the engine while taking revenue from Triple
+ * Whale (which includes Microsoft) would divide blended revenue by Google-only
+ * cost and overstate ROAS. Combining per channel means a channel the engine
+ * doesn't cover falls back to Triple Whale for its front end too, so the
+ * numerator and denominator always describe the same spend.
+ */
+var FRONT_COMPONENTS = ['spend', 'impressions', 'clicks', 'eng_conv', 'eng_conv_value',
+                        'is_impr', 'is_eligible'];
+var BACK_COMPONENTS  = ['tw_orders', 'tw_revenue', 'tw_nc_orders', 'tw_nc_revenue', 'sessions'];
 
 // Raw components. These are summed; nothing here is a ratio.
 var COMPONENTS = [
@@ -304,6 +351,82 @@ function sumComponents_(rows) {
   var bag = emptyComponents_();
   for (var i = 0; i < rows.length; i++) addComponents_(bag, rows[i]);
   return bag;
+}
+
+// ============================== SOURCE COMBINATION =========================
+
+/**
+ * Combine one channel's engine bag with its Triple Whale bag, for one period.
+ *
+ * Front-end and engine-reported components come from the engine. Attributed
+ * components come from Triple Whale. Both spend figures are retained so
+ * reconciliation can check that the two sources describe the same program.
+ */
+function combineChannelBags_(engBag, twBag, frontSource) {
+  var out = emptyComponents_();
+  var eng = engBag || emptyComponents_();
+  var tw  = twBag  || emptyComponents_();
+
+  // `frontSource` is decided ONCE PER CHANNEL for the whole period, by the
+  // caller, from the complete row set — never per segment from that segment's own
+  // rows.
+  //
+  // Deciding per segment is subtly wrong. Suppose the engine covers google-ads
+  // but a campaign appears only in Triple Whale (a rename: the engine reports the
+  // new name for all history, Triple Whale stored the old one). At blended level
+  // the engine wins for that channel, so the campaign's spend is excluded — which
+  // is correct, because the engine already reports that spend under the new name,
+  // and adding it would double-count. But a segment containing ONLY that campaign
+  // has no engine rows, so it would fall back to Triple Whale and count the spend
+  // after all. The segments then don't sum to blended, and the Reconciliation
+  // block contradicts itself.
+  //
+  // Fixing the source per channel makes every segment agree. Attributed revenue
+  // is unaffected either way — it always comes from Triple Whale, so a renamed
+  // campaign's revenue is never lost.
+  var frontFromEngine = (frontSource === 'engine');
+  var front = frontFromEngine ? eng : tw;
+
+  for (var i = 0; i < FRONT_COMPONENTS.length; i++) out[FRONT_COMPONENTS[i]] = num_(front[FRONT_COMPONENTS[i]]);
+  for (var j = 0; j < BACK_COMPONENTS.length;  j++) out[BACK_COMPONENTS[j]]  = num_(tw[BACK_COMPONENTS[j]]);
+
+  out._rows        = eng._rows + tw._rows;
+  out._twPresent   = tw._rows > 0;
+  out._hasSessions = !!tw._hasSessions;
+  out._hasIs       = !!front._hasIs;
+  out._frontSource = front._rows ? frontSource : 'none';
+
+  // Diagnostics, not display.
+  out._engRows  = eng._rows;
+  out._twRows   = tw._rows;
+  out._engSpend = eng._rows ? num_(eng.spend) : null;
+  out._twSpend  = tw._rows  ? num_(tw.spend)  : null;
+  return out;
+}
+
+/** Sum already-combined per-channel bags into one bag for the segment. */
+function mergeBags_(bags) {
+  var out = emptyComponents_();
+  var sources = {}, engSpend = null, twSpend = null;
+
+  for (var b = 0; b < bags.length; b++) {
+    var bag = bags[b];
+    if (!bag || !bag._rows) continue;
+    for (var i = 0; i < COMPONENTS.length; i++) out[COMPONENTS[i]] += num_(bag[COMPONENTS[i]]);
+    out._rows        += bag._rows;
+    out._twPresent    = out._twPresent    || bag._twPresent;
+    out._hasSessions  = out._hasSessions  || bag._hasSessions;
+    out._hasIs        = out._hasIs        || bag._hasIs;
+    if (bag._frontSource && bag._frontSource !== 'none') sources[bag._frontSource] = true;
+    if (bag._engSpend !== null && bag._engSpend !== undefined) engSpend = num_(engSpend) + bag._engSpend;
+    if (bag._twSpend  !== null && bag._twSpend  !== undefined) twSpend  = num_(twSpend)  + bag._twSpend;
+  }
+
+  var names = Object.keys(sources);
+  out._frontSource = names.length === 0 ? 'none' : (names.length === 1 ? names[0] : 'mixed');
+  out._engSpend = engSpend;
+  out._twSpend  = twSpend;
+  return out;
 }
 
 // ============================== DERIVATION =================================
@@ -669,7 +792,10 @@ function readEngineTab_(name) {
  * used by the classifier.
  */
 function readEngineDays_() {
-  var raw = readEngineTab_(ENGINE_DAY_SHEET);
+  // Automated feed plus any hand-imported history. The manual tab is read second
+  // but is not special-cased: a Microsoft Ads month imported by hand and a Google
+  // Ads month written by the script are the same kind of row from here on.
+  var raw = readEngineTab_(ENGINE_DAY_SHEET).concat(readEngineTab_(ENGINE_MANUAL_SHEET));
   var rows = [], types = {};
 
   for (var i = 0; i < raw.length; i++) {
@@ -698,10 +824,11 @@ function readEngineDays_() {
       is_eligible: hasShare ? impr / share : 0,
     });
 
-    if (r.channel_type) {
+    if (r.channel_type || r.labels) {
       types[classKey_(channel, campaign)] = {
-        channelType: String(r.channel_type),
+        channelType: String(r.channel_type || ''),
         subType: String(r.channel_sub_type || ''),
+        labels: String(r.labels || ''),
       };
     }
   }
@@ -841,7 +968,7 @@ var MAP_HEADER = [
   'Tactic (auto)', 'Brand (auto)',
   'Tactic (override)', 'Brand (override)',
   'Effective Tactic', 'Effective Brand', 'Deck Group',
-  'Cost (report month)', 'TW Revenue (report month)',
+  'Cost (report month)', 'TW Revenue (report month)', 'Seen in',
 ];
 
 var VALID_TACTICS = ['SEARCH', 'SHOPPING', 'PMAX', 'DSA', 'DEMAND_GEN', 'OTHER'];
@@ -859,6 +986,22 @@ function applyRules_(rules, name, fallback) {
 
 function autoTactic_(campaign)  { return applyRules_(TACTIC_RULES, campaign, 'OTHER'); }
 function autoBrand_(campaign)   { return applyRules_(BRAND_RULES,  campaign, 'UNKNOWN'); }
+
+/**
+ * Brand from Google Ads labels, when the engine feed exported any.
+ *
+ * A label is attached to the campaign, so it survives a rename; a regex reads the
+ * name, so it does not. Returns '' when no label maps, and the name rules apply.
+ */
+function brandFromLabels_(labels) {
+  if (!labels) return '';
+  var parts = String(labels).split(/[|,;]/);
+  for (var i = 0; i < parts.length; i++) {
+    var key = parts[i].trim().toLowerCase();
+    if (BRAND_LABEL_MAP[key]) return BRAND_LABEL_MAP[key];
+  }
+  return '';
+}
 
 /** Google Ads advertising_channel_type → our tactic vocabulary. */
 function tacticFromChannelType_(channelType, subType) {
@@ -897,7 +1040,7 @@ function makeClassifier_(overrides, engineTypes) {
     var eng = engineTypes[key] || {};
 
     var autoT = tacticFromChannelType_(eng.channelType, eng.subType) || autoTactic_(campaign);
-    var autoB = autoBrand_(campaign);
+    var autoB = brandFromLabels_(eng.labels) || autoBrand_(campaign);
 
     var tactic = ov.tactic || autoT;
     var brand  = ov.brand  || autoB;
@@ -964,19 +1107,29 @@ function readOverrides_() {
  * campaigns that no longer ran (kept at the bottom so history isn't lost when a
  * campaign pauses for a month and comes back).
  */
+/**
+ * `rows` comes from campaignMapRows_() and is already one row per campaign, from
+ * BOTH sources, with cost taken from the engine where it exists.
+ *
+ * The "Seen in" column is the useful new signal: a campaign showing
+ * "Triple Whale only" with real revenue and no engine rows is either a rename
+ * (the engine reports the current name, Triple Whale stored the old one) or a
+ * channel with no engine feed. Either way the segment sums stay right, because
+ * the two sources are combined per channel rather than joined per row.
+ */
 function renderCampaignMap_(rows, classify) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName(MAP_SHEET) || ss.insertSheet(MAP_SHEET);
   var overrides = readOverrides_();
 
-  // Aggregate the report month by campaign.
   var seen = {};
   for (var i = 0; i < rows.length; i++) {
     var r = rows[i];
-    var key = classKey_(r.channel, r.campaign);
-    var s = seen[key] || (seen[key] = { channel: r.channel, campaign: r.campaign, cost: 0, rev: 0 });
-    s.cost += num_(r.spend);
-    s.rev  += num_(r.tw_revenue);
+    seen[classKey_(r.channel, r.campaign)] = {
+      channel: r.channel, campaign: r.campaign,
+      cost: num_(r.spend), rev: num_(r.tw_revenue),
+      source: r.source || '',
+    };
   }
 
   var out = [];
@@ -990,7 +1143,7 @@ function renderCampaignMap_(rows, classify) {
   Object.keys(overrides).forEach(function (k) {
     if (seen[k]) return;
     var parts = k.split('||');
-    out.push(mapRow_({ channel: parts[0], campaign: parts[1], cost: null, rev: null },
+    out.push(mapRow_({ channel: parts[0], campaign: parts[1], cost: null, rev: null, source: 'not this month' },
       classify, overrides, k));
     carried++;
   });
@@ -1037,7 +1190,7 @@ function mapRow_(s, classify, overrides, key) {
     cls.autoTactic, cls.autoBrand,
     ov.tactic || '', ov.brand || '',
     cls.tactic, cls.brand, cls.deckGroup,
-    s.cost, s.rev,
+    s.cost, s.rev, s.source || '',
   ];
 }
 
@@ -1125,22 +1278,48 @@ function buildReportContext_() {
   var twCoverage  = coverage_(twAds, periods);
   var engCoverage = coverage_(eng.rows, periods);
 
+  // Which channels each source covers, per period. Drives the honest disclosure
+  // about Microsoft being absent from months the engine backfill doesn't reach.
+  var channelCoverage = channelCoverage_(twAds, eng.rows, periods);
+
+  // Front-end source per channel per period, decided from ALL rows for that
+  // channel — not per segment. See combineChannelBags_ for why that distinction
+  // is load-bearing.
+  var frontSource = {};
+  ['current', 'prior', 'yoy'].forEach(function (p) {
+    frontSource[p] = {};
+    channelCoverage[p].triplewhale.forEach(function (ch) { frontSource[p][ch] = 'triplewhale'; });
+    channelCoverage[p].engine.forEach(function (ch) { frontSource[p][ch] = 'engine'; });
+  });
+
   /**
    * Component bags per period for one segment.
    *
-   * Triple Whale is the source of record. Where it does not cover a period —
-   * typically the year-ago month, because its backfill starts later — we fall
-   * back to Google Ads engine rows so the engine columns of the %YoY row are
-   * still real. Triple Whale columns stay 'n/a' for that period rather than 0.
+   * The engine is the spine and Triple Whale is the overlay, combined PER
+   * CHANNEL and then summed — see the note above FRONT_COMPONENTS in Metrics.gs
+   * for why per channel rather than row-by-row.
    */
   var bagsFor = function (pred) {
     var out = {};
     ['current', 'prior', 'yoy'].forEach(function (p) {
-      var src = twCoverage[p] ? twAds : (engCoverage[p] ? eng.rows : []);
-      var inPeriod = rowsInPeriod_(src, periods[p]);
-      var kept = [];
-      for (var k = 0; k < inPeriod.length; k++) if (pred(inPeriod[k])) kept.push(inPeriod[k]);
-      out[p] = sumComponents_(kept);
+      var period = periods[p];
+      var byChannel = {};
+      var bucket = function (ch) {
+        return byChannel[ch] || (byChannel[ch] = { eng: [], tw: [] });
+      };
+
+      var engIn = rowsInPeriod_(eng.rows, period);
+      for (var i = 0; i < engIn.length; i++) if (pred(engIn[i])) bucket(engIn[i].channel).eng.push(engIn[i]);
+
+      var twIn = rowsInPeriod_(twAds, period);
+      for (var j = 0; j < twIn.length; j++) if (pred(twIn[j])) bucket(twIn[j].channel).tw.push(twIn[j]);
+
+      var combined = Object.keys(byChannel).map(function (ch) {
+        return combineChannelBags_(sumComponents_(byChannel[ch].eng),
+                                   sumComponents_(byChannel[ch].tw),
+                                   frontSource[p][ch] || 'none');
+      });
+      out[p] = mergeBags_(combined);
     });
     return out;
   };
@@ -1156,6 +1335,9 @@ function buildReportContext_() {
     searchNonBrand:  bagsFor(function (r) { return isSearch(r)   && isDeckNonBrand_(r.cls.brand); }),
     shopBrand:       bagsFor(function (r) { return isShopping(r) && isDeckBrand_(r.cls.brand); }),
     shopNonBrand:    bagsFor(function (r) { return isShopping(r) && isDeckNonBrand_(r.cls.brand); }),
+    // Completes the tactic partition: every row is SEARCH, SHOPPING or OTHER, so
+    // the three must sum to blended exactly. Asserted in the self-test.
+    other:           bagsFor(function (r) { return r.cls.deckGroup === 'OTHER'; }),
     unclassified:    bagsFor(function (r) { return r.cls.deckGroup === 'OTHER' || r.cls.brand === 'UNKNOWN'; }),
   };
 
@@ -1170,39 +1352,158 @@ function buildReportContext_() {
     classify: classify,
     twAds: twAds, twOpenAi: twOpenAi, engRows: eng.rows,
     twMeta: tw,
-    twCoverage: twCoverage, engCoverage: engCoverage,
+    twCoverage: twCoverage, engCoverage: engCoverage, channelCoverage: channelCoverage,
+    frontSource: frontSource,
     segments: segments, chatgpt: chatgpt,
-    mapRows: rowsInPeriod_(twAds, periods.current),
-    warnings: coverageWarnings_(twCoverage, engCoverage, periods, tw),
+    mapRows: campaignMapRows_(twAds, eng.rows, periods.current),
+    warnings: coverageWarnings_(twCoverage, engCoverage, channelCoverage, periods, tw, segments),
   };
 }
 
-function coverageWarnings_(twCov, engCov, periods, tw) {
+/**
+ * Which channels each source has rows for, per period, plus each channel's share
+ * of current-month spend — so a warning about a missing channel can say how much
+ * of the program it actually represents.
+ */
+function channelCoverage_(twRows, engRows, periods) {
+  var out = {};
+  ['current', 'prior', 'yoy'].forEach(function (p) {
+    var eng = {}, tw = {};
+    rowsInPeriod_(engRows, periods[p]).forEach(function (r) { eng[r.channel] = true; });
+    rowsInPeriod_(twRows,  periods[p]).forEach(function (r) { tw[r.channel]  = true; });
+    out[p] = { engine: Object.keys(eng).sort(), triplewhale: Object.keys(tw).sort() };
+  });
+
+  // Current-month spend per channel, engine preferred over Triple Whale so a
+  // channel present in both is not counted twice.
+  var spend = {}, total = 0;
+  var engByChannel = {}, twByChannel = {};
+  rowsInPeriod_(engRows, periods.current).forEach(function (r) {
+    engByChannel[r.channel] = num_(engByChannel[r.channel]) + num_(r.spend);
+  });
+  rowsInPeriod_(twRows, periods.current).forEach(function (r) {
+    twByChannel[r.channel] = num_(twByChannel[r.channel]) + num_(r.spend);
+  });
+  var channels = {};
+  Object.keys(engByChannel).forEach(function (c) { channels[c] = true; });
+  Object.keys(twByChannel).forEach(function (c) { channels[c] = true; });
+  Object.keys(channels).forEach(function (c) {
+    spend[c] = engByChannel[c] !== undefined ? engByChannel[c] : num_(twByChannel[c]);
+    total += spend[c];
+  });
+
+  out.currentSpend = spend;
+  out.currentSpendTotal = total;
+  // Kept separately so the cross-source check can compare only the channels both
+  // sources actually cover. Comparing totals would flag a 22% "drift" purely
+  // because the engine feed is Google-only while Triple Whale includes Bing —
+  // which is not drift, it is the fallback working as designed.
+  out.currentEngSpend = engByChannel;
+  out.currentTwSpend = twByChannel;
+  return out;
+}
+
+/**
+ * One row per campaign for the Campaign Map, from BOTH sources.
+ *
+ * Cost prefers the engine (the spine); Triple Whale revenue always comes from
+ * Triple Whale. Adding both spends would double-count every campaign that
+ * appears in both, so the engine figure wins when present.
+ */
+function campaignMapRows_(twRows, engRows, period) {
+  var acc = {};
+  var get = function (channel, campaign) {
+    var key = classKey_(channel, campaign);
+    return acc[key] || (acc[key] = {
+      channel: channel, campaign: campaign,
+      engCost: 0, twCost: 0, tw_revenue: 0, engRows: 0, twRows: 0,
+    });
+  };
+
+  rowsInPeriod_(engRows, period).forEach(function (r) {
+    var a = get(r.channel, r.campaign);
+    a.engCost += num_(r.spend);
+    a.engRows++;
+  });
+  rowsInPeriod_(twRows, period).forEach(function (r) {
+    var a = get(r.channel, r.campaign);
+    a.twCost     += num_(r.spend);
+    a.tw_revenue += num_(r.tw_revenue);
+    a.twRows++;
+  });
+
+  return Object.keys(acc).map(function (k) {
+    var a = acc[k];
+    a.spend = a.engRows ? a.engCost : a.twCost;
+    a.source = a.engRows && a.twRows ? 'both' : (a.engRows ? 'engine only' : 'Triple Whale only');
+    return a;
+  });
+}
+
+function coverageWarnings_(twCov, engCov, chanCov, periods, tw, segments) {
   var w = [];
-  if (!twCov.current) {
-    w.push('Triple Whale has NO data for ' + periods.current.label + ' (store covers ' +
-      tw.minDate + ' → ' + tw.maxDate + '). Run a sync in the Triple Whale sheet, or set ' +
-      'REPORT_MONTH in Config.gs to a month it covers.');
+  var cur = derive_(segments.blended.current);
+
+  if (!engCov.current && !twCov.current) {
+    w.push('NO data at all for ' + periods.current.label + '. Triple Whale covers ' +
+      tw.minDate + ' → ' + tw.maxDate + ' and the engine tab is empty. Sync the Triple Whale ' +
+      'sheet, run the MCC Google Ads Script, or set REPORT_MONTH in Config.gs to a covered month.');
+  } else if (!engCov.current) {
+    w.push('No Google Ads engine data for ' + periods.current.label + ', so front-end columns ' +
+      '(impressions, clicks, cost, engine orders/revenue) fall back to Triple Whale for this ' +
+      'month. Run the MCC Google Ads Script to make the engine the spine as intended.');
+  } else if (!twCov.current) {
+    w.push('No Triple Whale data for ' + periods.current.label + ' — front-end and engine ' +
+      'columns are real, but every attributed column (TW orders/revenue/AOV/CVR/ROAS) reads n/a.');
   }
-  if (!twCov.prior) {
-    w.push('Triple Whale has no data for the prior month (' + periods.prior.label +
-      ') — the %MoM row will read n/a.');
-  }
-  if (!twCov.yoy) {
-    w.push('Triple Whale has no data for ' + periods.yoy.label + ', so %YoY is ' +
-      (engCov.yoy
-        ? 'computed from Google Ads engine data only — the Triple Whale columns read n/a, and ' +
-          'Microsoft/Bing is excluded from that row. To get true YoY, lower BACKFILL_START in the ' +
-          'ld-x-tw-script project to at least ' + periods.yoy.start + ' and rebuild.'
-        : 'unavailable — the whole %YoY row reads n/a. Lower BACKFILL_START in the ld-x-tw-script ' +
-          'project to at least ' + periods.yoy.start + ' and rebuild, and/or backfill the MCC ' +
-          'Google Ads Script that far.'));
-  }
+
+  // The gap that matters most: engine history exists but Triple Whale's doesn't.
+  ['prior', 'yoy'].forEach(function (p) {
+    var label = periods[p].label;
+    var which = p === 'prior' ? '%MoM' : '%YoY';
+    if (twCov[p]) return;
+    if (engCov[p]) {
+      w.push(label + ' has engine data but no Triple Whale data, so the ' + which + ' row is real ' +
+        'for the front-end and engine columns and n/a for the attributed ones. That is expected ' +
+        'until the Triple Whale backfill reaches ' + periods[p].start + ' — see docs/GAPS.md.');
+    } else {
+      w.push(label + ' has no data from either source, so the whole ' + which + ' row reads n/a. ' +
+        'Extend the engine backfill (MONTHS_BACK in engine-report.js) to cover it.');
+    }
+  });
+
+  // Channels the engine misses in a period Triple Whale cannot cover either.
+  ['prior', 'yoy'].forEach(function (p) {
+    if (twCov[p] || !engCov[p]) return;      // already reported above
+    var engChannels = chanCov[p].engine;
+    var missing = TW_ADS_CHANNELS.filter(function (ch) { return engChannels.indexOf(ch) === -1; });
+    if (!missing.length) return;
+    var share = missingChannelShare_(chanCov, missing);
+    w.push(periods[p].label + ' engine data covers ' + engChannels.join(' + ') + ' but not ' +
+      missing.join(' + ') + ', so that row understates total spend. ' +
+      (share === null ? '' : 'Those channels are ' + (share * 100).toFixed(0) +
+        '% of current-month spend. ') +
+      'See docs/GAPS.md §8 for the two ways to close this.');
+  });
+
   if (!TW_SESSION_FIELD) {
     w.push('TW Sessions is not available (TW_SESSION_FIELD is unset), so that column reads n/a ' +
       'and TW CVR is computed on clicks. See docs/GAPS.md.');
   }
   return w;
+}
+
+/**
+ * Share of current-month spend sitting in the channels a past period is missing.
+ * Uses the current month as the yardstick because it is the only month we can be
+ * sure has all channels — which is exactly why the past period is a problem.
+ */
+function missingChannelShare_(chanCov, missing) {
+  var total = num_(chanCov.currentSpendTotal);
+  if (!total) return null;
+  var sum = 0;
+  for (var i = 0; i < missing.length; i++) sum += num_(chanCov.currentSpend[missing[i]]);
+  return sum > 0 ? sum / total : null;
 }
 
 // ============================== SHEET WRITER ===============================
@@ -1505,6 +1806,19 @@ function renderReconciliationBlock_(w, ctx) {
     ['  Shopping with no brand assignment',       shopGapCost,   gap(shopping.tw_revenue, [hBr.tw_revenue, hNb.tw_revenue])],
   ];
 
+  // Do the two sources actually describe the same program? This is the check
+  // that catches a broken engine backfill, a missing channel, or a Triple Whale
+  // sync that stalled — none of which the per-segment sums would reveal, because
+  // each source is internally consistent on its own.
+  var bag = ctx.segments.blended.current;
+  var engSpend = bag._engSpend, twSpend = bag._twSpend;
+  var agreement = (engSpend === null || twSpend === null) ? null : div_(engSpend - twSpend, twSpend);
+
+  rows.push(['Engine cost (spine)',            engSpend, null]);
+  rows.push(['Triple Whale spend (overlay)',   twSpend,  null]);
+  rows.push(['  engine vs TW difference',
+    (engSpend === null || twSpend === null) ? null : Math.round((engSpend - twSpend) * 100) / 100, null]);
+
   var pct = function (v, base) {
     var p = div_(v, base);
     return p === null ? '—' : (p * 100).toFixed(1) + '%';
@@ -1516,7 +1830,13 @@ function renderReconciliationBlock_(w, ctx) {
     'The brand rows should sum to their tactic exactly — "no brand assignment" is ' +
     pct(searchGapCost, search.cost) + ' of Search and ' + pct(shopGapCost, shopping.cost) +
     ' of Shopping. Anything materially above zero there means slides 6–7 under-report their ' +
-    'slide 5 parent; fix it with the override columns on the "' + MAP_SHEET + '" tab (amber rows).';
+    'slide 5 parent; fix it with the override columns on the "' + MAP_SHEET + '" tab (amber rows).' +
+    '\n\nFront-end source this month: ' + (bag._frontSource || 'none') + '. ' +
+    (agreement === null
+      ? 'Only one source covers this month, so there is nothing to cross-check.'
+      : 'Engine cost runs ' + (agreement * 100).toFixed(1) + '% vs Triple Whale spend. A few percent ' +
+        'is normal (different currency conversion and refresh timing). More than ~5% means one side ' +
+        'is missing a channel or a sync stalled — check Diagnostics → Check data sources.');
 
   w.block({
     name: 'RPT_RECONCILIATION', title: 'Reconciliation — why the parts do not sum to the whole',
@@ -2490,6 +2810,7 @@ function selfTestReport_() {
 
   checkDeckContract_(t);
   checkShapes_(t);
+  checkSpine_(t, ctx);
   checkPartitions_(t, ctx);
   checkWrittenDeltas_(t);
   checkDerivedRatios_(t, ctx);
@@ -2624,6 +2945,90 @@ function checkDeckContract_(t) {
   t.ok('every deck table is mapped by slidePlan_', unplanned.length === 0, unplanned.join(', '));
 }
 
+// ============================== H · SPINE / SOURCE COMBINATION =============
+
+/**
+ * The engine is the spine; Triple Whale is the overlay. These assertions pin that
+ * relationship, because getting it wrong is silent: every table still renders and
+ * every table is still internally consistent.
+ *
+ * The dangerous case is a per-channel mismatch — engine cost for Google only,
+ * divided into Triple Whale revenue that includes Microsoft. That inflates ROAS
+ * on the headline slide with nothing visibly wrong.
+ */
+function checkSpine_(t, ctx) {
+  t.section('H · Engine spine and Triple Whale overlay');
+
+  var bag = ctx.segments.blended.current;
+
+  // Front end must come from the engine once the backfill has run.
+  if (ctx.engCoverage.current) {
+    t.ok('current month front end comes from the engine',
+      bag._frontSource === 'engine' || bag._frontSource === 'mixed',
+      'is "' + bag._frontSource + '"');
+  } else {
+    t.note('no engine data for the report month — front end falls back to Triple Whale, ' +
+      'which is the documented degraded mode');
+  }
+
+  // Both sources should describe the same program — but only where BOTH cover the
+  // channel. Comparing totals would report a large false "drift" whenever the
+  // engine feed covers fewer channels than Triple Whale, which is the normal
+  // state before a Microsoft feed exists.
+  var engSpend = ctx.channelCoverage.currentEngSpend || {};
+  var twSpend  = ctx.channelCoverage.currentTwSpend  || {};
+  var overlapping = Object.keys(engSpend).filter(function (ch) { return twSpend[ch] !== undefined; });
+
+  if (!overlapping.length) {
+    t.note('no channel is covered by both sources this month, so there is nothing to cross-check');
+  } else {
+    overlapping.forEach(function (ch) {
+      var e = num_(engSpend[ch]), w = num_(twSpend[ch]);
+      if (w <= 0) return;
+      var drift = Math.abs(e - w) / w;
+      t.ok(ch + ': engine cost within 5% of Triple Whale spend', drift < 0.05,
+        fmtNum_(e) + ' vs ' + fmtNum_(w) + '  (' + (drift * 100).toFixed(1) + '%)');
+    });
+  }
+
+  // Blended cost must equal engine cost for engine-covered channels plus Triple
+  // Whale spend for the rest. This is the identity that guarantees the ROAS
+  // denominator describes the same spend as its numerator.
+  var expected = 0;
+  Object.keys(twSpend).forEach(function (ch) {
+    expected += (engSpend[ch] !== undefined) ? num_(engSpend[ch]) : num_(twSpend[ch]);
+  });
+  Object.keys(engSpend).forEach(function (ch) {
+    if (twSpend[ch] === undefined) expected += num_(engSpend[ch]);
+  });
+  t.near('blended cost = engine cost where covered + Triple Whale spend elsewhere',
+    derive_(bag).cost, expected);
+
+  // Attributed columns must be n/a, never 0, in periods Triple Whale misses.
+  ['prior', 'yoy'].forEach(function (p) {
+    if (ctx.twCoverage[p]) return;
+    var d = derive_(ctx.segments.blended[p]);
+    t.ok(p + ': TW Revenue is n/a (no Triple Whale data)', d.tw_revenue === null,
+      'got ' + fmtNum_(d.tw_revenue));
+    if (ctx.engCoverage[p]) {
+      t.ok(p + ': Cost is still real (engine covers it)', d.cost !== null && num_(d.cost) > 0,
+        'got ' + fmtNum_(d.cost));
+    }
+  });
+
+  // Per-channel combination: a channel the engine misses must not have its cost
+  // dropped while its Triple Whale revenue is kept.
+  var cov = ctx.channelCoverage;
+  ['current', 'prior', 'yoy'].forEach(function (p) {
+    var eng = cov[p].engine, tw = cov[p].triplewhale;
+    var twOnly = tw.filter(function (c) { return eng.indexOf(c) === -1; });
+    if (!twOnly.length) return;
+    t.note(p + ': ' + twOnly.join(', ') + ' present in Triple Whale but not the engine — ' +
+      'those channels use Triple Whale for their front end too, so cost and revenue still ' +
+      'describe the same spend');
+  });
+}
+
 // ============================== A · SHAPES =================================
 
 /**
@@ -2669,9 +3074,30 @@ function checkPartitions_(t, ctx) {
   t.section('B · Segments partition the blended total');
   var periods = ['current', 'prior'];
 
+  // Checked against the COMBINED bags the tables are actually built from, so the
+  // identities hold whichever source supplied the front end.
+  // SEARCH / SHOPPING / OTHER is an exhaustive partition of the tactic axis, so
+  // the three must sum to blended EXACTLY on the combined bags the tables are
+  // built from — no residual gap term.
+  //
+  // This is the check that catches a front-end source chosen per segment instead
+  // of per channel: a campaign present in Triple Whale but not the engine would
+  // then be counted in a narrow segment and excluded from blended, and this sum
+  // would not close.
+  ['current', 'prior', 'yoy'].forEach(function (pk) {
+    var b = derive_(ctx.segments.blended[pk]);
+    if (b.cost === null) { t.note(pk + ': no cost from either source, partition skipped'); return; }
+    ['cost', 'impressions', 'clicks', 'eng_orders', 'eng_revenue', 'tw_revenue', 'tw_orders'].forEach(function (metric) {
+      var parts = ['search', 'shopping', 'other'].reduce(function (acc, seg) {
+        return acc + num_(derive_(ctx.segments[seg][pk])[metric]);
+      }, 0);
+      t.near(pk + ': Search + Shopping + Other = Blended ' + metric, parts, num_(b[metric]));
+    });
+  });
+
   for (var p = 0; p < periods.length; p++) {
     var per = periods[p];
-    if (!ctx.twCoverage[per]) { t.note(per + ': no Triple Whale data, partition checks skipped'); continue; }
+    if (!ctx.twCoverage[per]) { t.note(per + ': no Triple Whale data, row-level partition checks skipped'); continue; }
 
     var rows = rowsInPeriod_(ctx.twAds, ctx.periods[per]);
     var total = 0, byGroup = { SEARCH: 0, SHOPPING: 0, OTHER: 0 };

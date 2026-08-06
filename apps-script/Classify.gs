@@ -30,7 +30,7 @@ var MAP_HEADER = [
   'Tactic (auto)', 'Brand (auto)',
   'Tactic (override)', 'Brand (override)',
   'Effective Tactic', 'Effective Brand', 'Deck Group',
-  'Cost (report month)', 'TW Revenue (report month)',
+  'Cost (report month)', 'TW Revenue (report month)', 'Seen in',
 ];
 
 var VALID_TACTICS = ['SEARCH', 'SHOPPING', 'PMAX', 'DSA', 'DEMAND_GEN', 'OTHER'];
@@ -48,6 +48,22 @@ function applyRules_(rules, name, fallback) {
 
 function autoTactic_(campaign)  { return applyRules_(TACTIC_RULES, campaign, 'OTHER'); }
 function autoBrand_(campaign)   { return applyRules_(BRAND_RULES,  campaign, 'UNKNOWN'); }
+
+/**
+ * Brand from Google Ads labels, when the engine feed exported any.
+ *
+ * A label is attached to the campaign, so it survives a rename; a regex reads the
+ * name, so it does not. Returns '' when no label maps, and the name rules apply.
+ */
+function brandFromLabels_(labels) {
+  if (!labels) return '';
+  var parts = String(labels).split(/[|,;]/);
+  for (var i = 0; i < parts.length; i++) {
+    var key = parts[i].trim().toLowerCase();
+    if (BRAND_LABEL_MAP[key]) return BRAND_LABEL_MAP[key];
+  }
+  return '';
+}
 
 /** Google Ads advertising_channel_type → our tactic vocabulary. */
 function tacticFromChannelType_(channelType, subType) {
@@ -86,7 +102,7 @@ function makeClassifier_(overrides, engineTypes) {
     var eng = engineTypes[key] || {};
 
     var autoT = tacticFromChannelType_(eng.channelType, eng.subType) || autoTactic_(campaign);
-    var autoB = autoBrand_(campaign);
+    var autoB = brandFromLabels_(eng.labels) || autoBrand_(campaign);
 
     var tactic = ov.tactic || autoT;
     var brand  = ov.brand  || autoB;
@@ -153,19 +169,29 @@ function readOverrides_() {
  * campaigns that no longer ran (kept at the bottom so history isn't lost when a
  * campaign pauses for a month and comes back).
  */
+/**
+ * `rows` comes from campaignMapRows_() and is already one row per campaign, from
+ * BOTH sources, with cost taken from the engine where it exists.
+ *
+ * The "Seen in" column is the useful new signal: a campaign showing
+ * "Triple Whale only" with real revenue and no engine rows is either a rename
+ * (the engine reports the current name, Triple Whale stored the old one) or a
+ * channel with no engine feed. Either way the segment sums stay right, because
+ * the two sources are combined per channel rather than joined per row.
+ */
 function renderCampaignMap_(rows, classify) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName(MAP_SHEET) || ss.insertSheet(MAP_SHEET);
   var overrides = readOverrides_();
 
-  // Aggregate the report month by campaign.
   var seen = {};
   for (var i = 0; i < rows.length; i++) {
     var r = rows[i];
-    var key = classKey_(r.channel, r.campaign);
-    var s = seen[key] || (seen[key] = { channel: r.channel, campaign: r.campaign, cost: 0, rev: 0 });
-    s.cost += num_(r.spend);
-    s.rev  += num_(r.tw_revenue);
+    seen[classKey_(r.channel, r.campaign)] = {
+      channel: r.channel, campaign: r.campaign,
+      cost: num_(r.spend), rev: num_(r.tw_revenue),
+      source: r.source || '',
+    };
   }
 
   var out = [];
@@ -179,7 +205,7 @@ function renderCampaignMap_(rows, classify) {
   Object.keys(overrides).forEach(function (k) {
     if (seen[k]) return;
     var parts = k.split('||');
-    out.push(mapRow_({ channel: parts[0], campaign: parts[1], cost: null, rev: null },
+    out.push(mapRow_({ channel: parts[0], campaign: parts[1], cost: null, rev: null, source: 'not this month' },
       classify, overrides, k));
     carried++;
   });
@@ -226,6 +252,6 @@ function mapRow_(s, classify, overrides, key) {
     cls.autoTactic, cls.autoBrand,
     ov.tactic || '', ov.brand || '',
     cls.tactic, cls.brand, cls.deckGroup,
-    s.cost, s.rev,
+    s.cost, s.rev, s.source || '',
   ];
 }
