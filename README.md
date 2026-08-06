@@ -131,8 +131,11 @@ Staged go-live ladder: [`docs/DEPLOY.md`](docs/DEPLOY.md). Reference detail:
 [`docs/SETUP.md`](docs/SETUP.md). The short version:
 
 1. `npm test` locally (above) — no deploy needed.
-2. Create the reporting spreadsheet, `cp .clasp.json.example .clasp.json`, set the
-   Script ID, `npm run push`.
+2. Create the reporting spreadsheet, then either `npm run push` via clasp, or
+   paste **both** `dist/Code.gs` and `dist/appsscript.json` (⚙ Project Settings →
+   show the manifest). The manifest pins the OAuth scopes, and an explicit list
+   there overrides Apps Script's automatic detection — so a stale manifest
+   withholds permissions the code needs, with no prompt to tell you.
 3. `Monthly Report → Setup → Settings` — fill in `TW_SPREADSHEET_ID` and `REGION`
    on the `Settings` **tab**. Not in `Config.gs`: pasting an updated `dist/Code.gs`
    replaces the whole project, so values in the code are lost on every update.

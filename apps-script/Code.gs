@@ -203,6 +203,35 @@ function firstRunCheck() {
     }
   }
 
+  // Probe the external-request permission HERE rather than letting it surface
+  // later. An explicit oauthScopes list in appsscript.json overrides Apps Script's
+  // automatic scope detection, so a manifest written before the code needed
+  // UrlFetchApp withholds it permanently and Apps Script never prompts. That is
+  // invisible until something tries to fetch, which is the wrong time to find out.
+  if (PRODUCT_FEED_URL) {
+    try {
+      var probe = UrlFetchApp.fetch(PRODUCT_FEED_URL, { muteHttpExceptions: true, followRedirects: true });
+      var pc = probe.getResponseCode();
+      notes.push(pc === 200
+        ? 'Product feed reachable (HTTP 200, ' + Math.round(probe.getContentText().length / 1024) +
+          ' KB). Run Setup → Diagnose the product feed to confirm the parser reads it.'
+        : 'Product feed returned HTTP ' + pc + ' — it must be reachable without a login.');
+    } catch (e) {
+      if (/permission to call UrlFetchApp|script\.external_request/i.test(String(e.message))) {
+        problems.push('This project cannot make external requests, so slide 11 product images ' +
+          'cannot be fetched. Add "https://www.googleapis.com/auth/script.external_request" to ' +
+          'oauthScopes in appsscript.json (⚙ Project Settings → show the manifest), or delete the ' +
+          'oauthScopes key entirely so scopes are inferred from the code. dist/appsscript.json in ' +
+          'the repo is the correct manifest. Everything else works without this.');
+      } else {
+        notes.push('Product feed could not be fetched: ' + e.message);
+      }
+    }
+  } else {
+    notes.push('PRODUCT_FEED_URL is not set → slide 11 keeps its "Product Image" placeholders. ' +
+      'Set it on the ' + SETTINGS_SHEET + ' tab to fill them automatically.');
+  }
+
   var tzNow = tz_();
   notes.push('Script time zone: ' + tzNow + '. Region: ' + REGION + '. Currency: ' + CURRENCY + '.');
 

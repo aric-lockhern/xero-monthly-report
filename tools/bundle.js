@@ -95,7 +95,15 @@ const parts = ORDER.map(name => {
 fs.mkdirSync(OUT_DIR, { recursive: true });
 fs.writeFileSync(OUT, banner + parts.join('\n') + '\n', 'utf8');
 
+// Copy the manifest alongside the bundle. It is a SEPARATE file in Apps Script
+// and cannot be embedded in the code — and because an explicit `oauthScopes` list
+// OVERRIDES Apps Script's automatic scope detection, a stale manifest silently
+// withholds a permission the code now needs. Shipping it beside dist/Code.gs
+// makes it a two-file paste rather than a thing to remember.
+fs.copyFileSync(path.join(SRC, 'appsscript.json'), path.join(OUT_DIR, 'appsscript.json'));
+
 const lines = fs.readFileSync(OUT, 'utf8').split('\n').length;
 const kb = (fs.statSync(OUT).size / 1024).toFixed(0);
 console.log(`bundle: wrote dist/Code.gs — ${ORDER.length} files, ${lines} lines, ${kb} KB`);
+console.log('bundle: also wrote dist/appsscript.json (paste both — the manifest pins OAuth scopes)');
 console.log('bundle: verify it with  npm run test:bundled');

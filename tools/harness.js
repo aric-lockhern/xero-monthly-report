@@ -322,6 +322,9 @@ const SpreadsheetApp = {
 };
 
 const SlidesApp = { openById: () => { throw new Error('harness: Slides is not stubbed'); } };
+const UrlFetchApp = {
+  fetch: () => { throw new Error('harness: UrlFetchApp is not stubbed (no network in tests)'); },
+};
 const XmlService = {
   parse: () => { throw new Error('harness: XmlService is not stubbed'); },
   getNamespace: (u) => ({ uri: u }),

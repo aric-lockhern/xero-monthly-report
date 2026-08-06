@@ -18,14 +18,32 @@ New Google Sheet, named e.g. `Xero Shoes — Monthly Report (US)`. This is **not
 the Triple Whale sheet — keep them separate so a rebuild here can never touch the
 Triple Whale store.
 
-### A2. Paste the code
+### A2. Paste the code — BOTH files
 
-Extensions → Apps Script. Create one script file per `.gs` in `apps-script/` and
-paste the contents. Names don't technically matter (Apps Script shares one global
-scope) but matching them keeps things findable.
+Extensions → Apps Script.
 
-Then Project Settings → **check "Show appsscript.json"**, and paste in
-`apps-script/appsscript.json`. That sets the time zone and OAuth scopes.
+**File 1 — the code.** Paste `dist/Code.gs` over the default `Code.gs`. That single
+file is every `apps-script/*.gs` concatenated; Apps Script shares one global scope,
+so it behaves identically to the separate files.
+
+**File 2 — the manifest.** ⚙ Project Settings → tick **"Show appsscript.json
+manifest file in editor"**, open `appsscript.json` from the file list, and paste
+`dist/appsscript.json`.
+
+> **Both files matter, and the manifest is the one people skip.** An explicit
+> `oauthScopes` list in the manifest **OVERRIDES Apps Script's automatic scope
+> detection**. So a manifest written before the code needed a permission withholds
+> that permission *permanently* — Apps Script believes the existing authorisation
+> is sufficient and never prompts, and running from the editor does not help
+> either. The symptom is a runtime error like "You do not have permission to call
+> UrlFetchApp.fetch" that no amount of re-authorising fixes.
+>
+> After any update that adds a capability, re-paste **both** files. `npm run
+> bundle` writes them side by side for exactly this reason.
+>
+> If you would rather not think about it: delete the `oauthScopes` key entirely.
+> Apps Script then infers scopes from the code on every save, which cannot go
+> stale. The explicit list is only there to document what the project needs.
 
 > Time zone must match the Triple Whale project — `America/New_York` — or month
 > boundaries can disagree by a day between the two sheets.

@@ -181,19 +181,23 @@ function feedFetchHelp_(e) {
   var msg = String(e && e.message || e);
 
   if (/permission to call UrlFetchApp|script\.external_request/i.test(msg)) {
-    return 'This script is not yet authorised to make external requests, so it cannot fetch the ' +
-      'feed.\n\n' + msg + '\n\n' +
-      'WHY: the project was authorised before its code contained any UrlFetchApp call, so the ' +
-      'stored permission grant does not include the external-request scope — and Apps Script will ' +
-      'not re-prompt from a menu click.\n\n' +
-      'FIX (about 30 seconds):\n' +
+    return 'This script is not yet authorised to make external requests.\n\n' + msg + '\n\n' +
+      'WHY, and it is not what it looks like: if this project\'s appsscript.json contains an ' +
+      'explicit "oauthScopes" list, that list OVERRIDES Apps Script\'s automatic scope detection. ' +
+      'A manifest written before the code made any external request therefore withholds the ' +
+      'permission permanently — and because Apps Script believes the existing authorisation is ' +
+      'sufficient, it never prompts. Running from the editor does not help.\n\n' +
+      'FIX — update the manifest:\n' +
       '  1. Extensions → Apps Script\n' +
-      '  2. In the function dropdown at the top, choose  refreshProductImages\n' +
-      '  3. Click  Run\n' +
-      '  4. Authorise when prompted — Advanced → Go to … (unsafe) → Allow.\n' +
-      '     The consent screen will now list "Connect to an external service".\n' +
-      '  5. Come back here and run Setup → Refresh product images again.\n\n' +
-      'Running from the editor is what forces the re-consent; a menu click cannot.';
+      '  2. ⚙ Project Settings → tick "Show appsscript.json manifest file in editor"\n' +
+      '  3. Open appsscript.json from the file list on the left\n' +
+      '  4. Make sure "oauthScopes" contains this line:\n' +
+      '       "https://www.googleapis.com/auth/script.external_request"\n' +
+      '     The full correct manifest is dist/appsscript.json in the repo — paste the whole thing.\n' +
+      '  5. Save, then run Setup → Refresh product images. You WILL now be re-prompted, and the ' +
+      'consent screen will list "Connect to an external service".\n\n' +
+      'Alternatively delete the whole "oauthScopes" key: Apps Script then infers scopes from the ' +
+      'code on every save, which cannot go stale.';
   }
 
   if (/DNS|Address unavailable|host/i.test(msg)) {
