@@ -678,7 +678,32 @@ if (ARGS.engine) {
     ['impressions descend', impr.every((v, i) => i === 0 || impr[i - 1] >= v), true],
     ['"zero drop" survives as non-brand', terms.indexOf('zero drop running shoes') !== -1, true],
     ['all five non-brand terms are present', terms.length, 5],
+    ['the click threshold is disclosed', /minimum monthly click count/.test(reportText()), true],
   ].forEach(([name, got, want]) => expectEq('slide 10 terms', name, got, want));
+
+  // The search-terms feed keeps ONE month and rewrites the tab, so "I asked for a
+  // month the feed no longer holds" is now the commonest way slide 10 comes back
+  // empty — and it is not a failure. It must not read like one, because the fix is
+  // completely different from the fix for a broken query.
+  const wrongMonth = vm.runInContext(`(function () {
+    var saved = REPORT_MONTH;
+    REPORT_MONTH = '2001-09';
+    try {
+      var ctx = buildReportContext_();
+      var said = [];
+      var w = { block: function (o) { said.push(o.note || ''); } };
+      renderPmaxCategoryBlock_(w, ctx);
+      return said.join('\\n');
+    } finally { REPORT_MONTH = saved; }
+  })()`, context);
+
+  [
+    ['a month the feed lacks says so, and names what it has',
+      /holds 2026-07/.test(wrongMonth) || /holds \d{4}-\d{2}/.test(wrongMonth), true],
+    ['and says nothing is broken', /Nothing is broken/.test(wrongMonth), true],
+    ['and does not claim the query failed',
+      /_eng_status. carries Google/.test(wrongMonth), false],
+  ].forEach(([name, got, want]) => expectEq('slide 10 window', name, got, want));
 }
 
 // ---- the dimension-discovery diagnostic's recommendation ----
@@ -751,6 +776,142 @@ if (ARGS.engine) {
     if (!ARGS.quiet) console.log('\nADS SCRIPT PINNED DEFAULTS');
     expectEq('ads defaults', 'a pinned spreadsheet is paired with pinned account ids',
       hasSheet === hasIds, true);
+  }
+
+  // ---- static guards on the PMax search-terms query ----
+  //
+  // Two ways to break this query that NO local test can catch, because both are GAQL
+  // semantics only Google evaluates — the query still parses, still runs, and still
+  // returns plausible rows. Assert them against the source instead.
+  {
+    const fn = adsSrc.match(/function fetchPmaxSearchTerms_[\s\S]*?\n}/);
+    if (!fn) die('could not find fetchPmaxSearchTerms_ in engine-report.js');
+    const src = fn[0];
+    const filtersOnMetrics = /metrics\.clicks\s*>/.test(src);
+    const selectsDate = /SELECT\s+segments\.date/.test(src);
+
+    if (!ARGS.quiet) console.log('\nPMAX SEARCH-TERMS QUERY (static guards)');
+    [
+      // With segments.date selected, each row is a term-DAY, so a metrics filter in the
+      // WHERE means "clicks in one day". A term with 4 clicks a day for a month — 120
+      // clicks, top of the slide — would vanish, and the output would look fine.
+      ['a metrics filter is never combined with segments.date',
+        filtersOnMetrics && selectsDate, false],
+      // Google documents that any keyword-related segment silently filters out every
+      // Performance Max row. The query succeeds and still returns Search rows, so the
+      // symptom is "PMax had no search terms" — indistinguishable from a quiet account.
+      ['no keyword segment (it silently drops all PMax rows)',
+        /keyword\.(info|text|criterion)/.test(src), false],
+      // The resource itself: search_term_view returns no PMax data at all.
+      ['queries campaign_search_term_view, not search_term_view',
+        /FROM campaign_search_term_view/.test(src) && !/FROM search_term_view/.test(src), true],
+    ].forEach(([name, got, want]) => expectEq('pmax terms query', name, got, want));
+  }
+
+  // ---- run the Ads script's fetch functions against a stubbed AdsApp ----
+  //
+  // The Ads script had no executable coverage at all, and it cost a full 30-minute
+  // MCC run to discover that `_eng_product_dims` died on every row: the API OMITS the
+  // `segments` container rather than returning empty values, so a query selecting only
+  // `segments.product_custom_attribute0` yields rows with no `segments` key for every
+  // product where that label is unset, and `r.segments[key]` throws. Reports that also
+  // select `segments.date` never hit it, which is why every other one worked.
+  //
+  // Stubbing AdsApp.search is enough to run these for real, so do that.
+  {
+    const adsCtx = vm.createContext({
+      Logger: { log() {} },
+      Utilities: {
+        formatDate: (d, tz, f) => {
+          const iso = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString();
+          return f === 'yyyy-MM' ? iso.slice(0, 7) : iso.slice(0, 10);
+        },
+      },
+      SpreadsheetApp: { openById: () => { throw new Error('not used'); } },
+      AdsManagerApp: undefined,
+      console,
+    });
+    let queries = [];
+    let nextRows = [];
+    adsCtx.AdsApp = {
+      currentAccount: () => ({
+        getTimeZone: () => 'Etc/UTC', getCustomerId: () => '602-681-1446',
+        getName: () => 'Xero Shoes US', getCurrencyCode: () => 'USD',
+      }),
+      search: (q) => {
+        queries.push(q);
+        const rows = nextRows.slice();
+        let i = 0;
+        return { hasNext: () => i < rows.length, next: () => rows[i++] };
+      },
+    };
+    vm.runInContext(adsSrc, adsCtx);
+
+    if (!ARGS.quiet) console.log('\nADS SCRIPT FETCH FUNCTIONS (stubbed AdsApp)');
+
+    // A row with metrics but NO `segments` key — exactly what the API returns for an
+    // unpopulated label, and exactly what broke the live run.
+    nextRows = [
+      { metrics: { impressions: 1000, clicks: 40, costMicros: 50000000, conversions: 3, conversionsValue: 400 } },
+      { segments: { productCustomAttribute0: 'seasonal' },
+        metrics: { impressions: 500, clicks: 20, costMicros: 25000000, conversions: 1, conversionsValue: 120 } },
+    ];
+    let dims = null, threw = null;
+    try {
+      dims = vm.runInContext(
+        `fetchProductDims_({ start: '2026-07-01', end: '2026-07-31' })`, adsCtx);
+    } catch (e) { threw = e.message; }
+
+    expectEq('ads fetch', 'a row with no segments container does not throw', threw, null);
+    if (!threw) {
+      const values = dims.map(r => r[2]);
+      expectEq('ads fetch', 'the missing segment is recorded as (not set)',
+        values.indexOf('(not set)') !== -1, true);
+      expectEq('ads fetch', 'the populated segment still comes through',
+        values.indexOf('seasonal') !== -1, true);
+      // Count DISTINCT dimension names, not rows: only attribute0 is populated in the
+      // stub, so the other eight collapse both rows into one "(not set)" group each.
+      // That collapsing is correct behaviour, which is why the row count is not 9×2.
+      expectEq('ads fetch', 'all nine dimensions are probed',
+        Object.keys(dims.reduce((a, r) => (a[r[1]] = 1, a), {})).length, 9);
+      expectEq('ads fetch', 'one query per dimension, never a combined one',
+        queries.length, 9);
+    }
+
+    // And the search-terms query: assert the shape the click threshold depends on.
+    queries = [];
+    nextRows = [
+      { campaignSearchTermView: { searchTerm: 'barefoot shoes' },
+        campaign: { id: 1001, name: 'PMAX' },
+        metrics: { impressions: 9000, clicks: 300, costMicros: 100000000, conversions: 0, conversionsValue: 0 } },
+    ];
+    const termRows = vm.runInContext(
+      `fetchPmaxSearchTerms_(monthRange_(1))`, adsCtx);
+
+    expectEq('ads fetch', 'one query per month, not one for the whole range', queries.length, 1);
+    expectEq('ads fetch', 'the query bounds a whole calendar month',
+      /BETWEEN "\d{4}-\d{2}-01" AND "\d{4}-\d{2}-(28|29|30|31)"/.test(queries[0]), true);
+    expectEq('ads fetch', 'the click threshold is in the query',
+      /metrics\.clicks > 5/.test(queries[0]), true);
+    expectEq('ads fetch', 'a term row survives and keeps its month',
+      termRows.length === 1 && /^\d{4}-\d{2}$/.test(termRows[0][0]), true);
+    expectEq('ads fetch', 'the month is the last COMPLETE month, never the current one',
+      termRows[0][0] !== new Date().toISOString().slice(0, 7), true);
+
+    // With a 3-month window the per-month loop becomes distinguishable from one
+    // range-wide query — at TERM_MONTHS_BACK=1 the two are identical, so a regression
+    // to a single query would pass unnoticed if this were the only case tested.
+    queries = [];
+    const wide = vm.runInContext(`fetchPmaxSearchTerms_(monthRange_(3))`, adsCtx);
+    expectEq('ads fetch', 'a 3-month window issues 3 separate monthly queries',
+      queries.length, 3);
+    expectEq('ads fetch', 'each query covers exactly one month',
+      queries.every(q => {
+        const m = q.match(/BETWEEN "(\d{4}-\d{2})-01" AND "(\d{4}-\d{2})-\d{2}"/);
+        return !!m && m[1] === m[2];
+      }), true);
+    expectEq('ads fetch', 'and the three months are distinct',
+      new Set(wide.map(r => r[0])).size, 3);
   }
 
   const vocab = vm.runInContext('PRODUCT_DIM_VOCAB.map(function (v) { return v; })', context);

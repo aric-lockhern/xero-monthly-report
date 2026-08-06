@@ -175,7 +175,11 @@ Sources, in priority order:
    tolerantly (`1,234`, `$1,234.56`, `12%`), because `Number('1,234')` is `NaN` and
    one `NaN` summed into a column is a wrong slide with nothing visibly broken.
 2. **`_eng_pmax_term`** ← `campaign_search_term_view`, filtered to
-   `campaign.advertising_channel_type = 'PERFORMANCE_MAX'`.
+   `campaign.advertising_channel_type = 'PERFORMANCE_MAX'`, **one month** and
+   **minimum 5 clicks in the month** (`TERM_MONTHS_BACK` / `TERM_MIN_CLICKS`). Queried
+   one calendar month at a time with **no date segment** — with `segments.date` each
+   row is a term-*day* and the click threshold would mean "five clicks in one day",
+   silently dropping a term with four clicks a day for a month. GAPS §4.
 3. **`_eng_pmax_cat`** — the older search-CATEGORIES tab, read only so an existing
    sheet still renders something until the MCC script next runs. The block says so.
 

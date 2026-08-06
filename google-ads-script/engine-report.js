@@ -112,6 +112,22 @@ var CONFIG = {
   // usually dominates the top of a PMax search-term list. Keeping only 60 here could
   // leave fewer than 16 non-brand rows to fill the slide.
   TOP_TERM_ROWS:    250,
+
+  // Search terms get their OWN, much shorter window. Slide 10 is a single-month view,
+  // and search terms are by far the highest-cardinality report here — every distinct
+  // query a PMax campaign matched. Pulling three months of them is three times the
+  // work for two months nobody reads.
+  //
+  // Raise it to 2 or 3 if you expect to rebuild past months' decks: the tab is
+  // rewritten each run, so a window of 1 means only the latest month is on it.
+  TERM_MONTHS_BACK: 1,
+
+  // Drop search terms below this many clicks IN THE MONTH. The tail of a search-term
+  // report is thousands of one-click queries that cannot reach a 16-row slide; cutting
+  // them is most of the cost of this report for none of the content.
+  //
+  // 0 disables the filter.
+  TERM_MIN_CLICKS: 5,
 };
 
 var CHANNEL = 'google-ads';   // matches the Triple Whale channel id, so the
@@ -138,10 +154,13 @@ function main() {
   var settingsNote = applySpreadsheetSettings_(ss);
   var range = dateRange_(CONFIG.MONTHS_BACK);
   var detailRange = dateRange_(CONFIG.DETAIL_MONTHS_BACK);
+  var termRange = monthRange_(CONFIG.TERM_MONTHS_BACK);
   var log = [];
 
   Logger.log('Window: ' + range.start + ' → ' + range.end +
-    '   detail: ' + detailRange.start + ' → ' + detailRange.end);
+    '   detail: ' + detailRange.start + ' → ' + detailRange.end +
+    '   search terms: ' + termRange.months.map(function (m) { return m.month; }).join(', ') +
+    ' (clicks > ' + CONFIG.TERM_MIN_CLICKS + ')');
 
   var accounts = resolveAccounts_();
   Logger.log('Accounts: ' + accounts.map(function (a) { return a.label; }).join(', '));
@@ -155,7 +174,7 @@ function main() {
     { tab: CONFIG.TAB_DAY,      header: HEADER_DAY,      fn: fetchCampaignDays_,   range: range },
     { tab: CONFIG.TAB_PRODUCT,  header: HEADER_PRODUCT,  fn: fetchProductTypes_,   range: detailRange },
     { tab: CONFIG.TAB_ITEM,     header: HEADER_ITEM,     fn: fetchItems_,          range: detailRange },
-    { tab: CONFIG.TAB_PMAX_TERM, header: HEADER_PMAX_TERM, fn: fetchPmaxSearchTerms_, range: detailRange },
+    { tab: CONFIG.TAB_PMAX_TERM, header: HEADER_PMAX_TERM, fn: fetchPmaxSearchTerms_, range: termRange },
     { tab: CONFIG.TAB_PMAX_CAT, header: HEADER_PMAX_CAT, fn: fetchPmaxCategories_, range: detailRange },
     { tab: CONFIG.TAB_ASSET,    header: HEADER_ASSET,    fn: fetchAssets_,         range: detailRange },
     { tab: CONFIG.TAB_PRODUCT_DIMS, header: HEADER_PRODUCT_DIMS, fn: fetchProductDims_, range: detailRange },
@@ -189,7 +208,7 @@ function main() {
   }
 
   log.push(['(settings)', 'INFO', settingsNote, '']);
-  writeStatus_(ss, log, range, detailRange, accounts);
+  writeStatus_(ss, log, range, detailRange, termRange, accounts);
   Logger.log('Done. ' + log.map(function (l) { return l[0] + '=' + l[1]; }).join(', '));
 }
 
@@ -408,13 +427,13 @@ function fetchCampaignDays_(range, acc) {
 
   var rows = [], index = {};
   eachRow_(base, function (r) {
-    var key = r.segments.date + '||' + r.campaign.id;
+    var key = seg_(r).date + '||' + r.campaign.id;
     var row = [
-      r.segments.date, CHANNEL, acc.label, String(r.campaign.id), r.campaign.name,
+      seg_(r).date, CHANNEL, acc.label, String(r.campaign.id), r.campaign.name,
       r.campaign.advertisingChannelType || '', r.campaign.advertisingChannelSubType || '',
       (labelsFor[String(r.campaign.id)] || []).join('|'),
-      n_(r.metrics.impressions), n_(r.metrics.clicks), micros_(r.metrics.costMicros),
-      n_(r.metrics.conversions), n_(r.metrics.conversionsValue), '',
+      n_(met_(r).impressions), n_(met_(r).clicks), micros_(met_(r).costMicros),
+      n_(met_(r).conversions), n_(met_(r).conversionsValue), '',
     ];
     index[key] = row;
     rows.push(row);
@@ -428,8 +447,8 @@ function fetchCampaignDays_(range, acc) {
     'AND campaign.advertising_channel_type IN ("SEARCH", "SHOPPING")';
   try {
     eachRow_(isQuery, function (r) {
-      var row = index[r.segments.date + '||' + r.campaign.id];
-      if (row) row[13] = n_(r.metrics.searchImpressionShare);   // last column of HEADER_DAY
+      var row = index[seg_(r).date + '||' + r.campaign.id];
+      if (row) row[13] = n_(met_(r).searchImpressionShare);   // last column of HEADER_DAY
     });
   } catch (e) {
     Logger.log('Impression share query failed (slide 9 will be empty): ' + e.message);
@@ -458,11 +477,13 @@ function fetchProductTypes_(range) {
   var k1 = camel_(f1), k2 = camel_(f2);
   var acc = {};
   eachRow_(q, function (r) {
-    var month = String(r.segments.date).slice(0, 7);
-    // A product with no value for a custom label comes back empty, not absent.
-    // '(not set)' keeps those rows visible instead of silently merging them.
-    var d1 = r.segments[k1] || '(not set)';
-    var d2 = r.segments[k2] || '(not set)';
+    var seg = seg_(r);
+    var month = String(seg.date).slice(0, 7);
+    // A product with no value for a custom label may come back empty OR with the
+    // whole segments container omitted. '(not set)' keeps those rows visible instead
+    // of silently merging them — or, before seg_(), throwing.
+    var d1 = seg[k1] || '(not set)';
+    var d2 = seg[k2] || '(not set)';
     addTo_(acc, [month, d1, d2, f1, f2].join('||'), r);
   });
   return topPerMonth_(acc, 5, CONFIG.TOP_PRODUCT_ROWS);
@@ -514,7 +535,10 @@ function fetchProductDims_(range) {
     var acc = {};
     try {
       eachRow_(q, function (r) {
-        var v = r.segments[key];
+        // seg_() not r.segments: this query selects ONE segment, so the container is
+        // absent from every row where that label is unset — which is most of them for
+        // an unpopulated custom label, and was killing the whole probe.
+        var v = seg_(r)[key];
         addTo_(acc, [month, field, (v === undefined || v === null || v === '') ? '(not set)' : v].join('||'), r);
       });
     } catch (e) {
@@ -549,9 +573,10 @@ function fetchItems_(range) {
 
   var acc = {};
   eachRow_(q, function (r) {
-    var month = String(r.segments.date).slice(0, 7);
-    var id = r.segments.productItemId || '(not set)';
-    var title = r.segments.productTitle || id;
+    var seg = seg_(r);
+    var month = String(seg.date).slice(0, 7);
+    var id = seg.productItemId || '(not set)';
+    var title = seg.productTitle || id;
     addTo_(acc, [month, id, title].join('||'), r);
   });
   return topPerMonth_(acc, 3, CONFIG.TOP_ITEM_ROWS);
@@ -590,24 +615,45 @@ var HEADER_PMAX_TERM = ['month', 'campaign_id', 'campaign', 'search_term',
  * term, so redefining brand is a rebuild rather than another 30-minute MCC run.
  */
 function fetchPmaxSearchTerms_(range) {
-  // The campaign fields come along as attributed resources, which is what lets one
-  // query cover every PMax campaign instead of one query per campaign.
-  var q = 'SELECT segments.date, campaign_search_term_view.search_term, ' +
-    'campaign.id, campaign.name, ' +
-    'metrics.impressions, metrics.clicks, metrics.cost_micros, ' +
-    'metrics.conversions, metrics.conversions_value ' +
-    'FROM campaign_search_term_view ' +
-    'WHERE segments.date BETWEEN "' + range.start + '" AND "' + range.end + '" ' +
-    'AND campaign.advertising_channel_type = "PERFORMANCE_MAX" ' +
-    'AND metrics.impressions > 0';
-
   var acc = {};
-  eachRow_(q, function (r) {
-    var month = String(r.segments.date).slice(0, 7);
-    var term = (r.campaignSearchTermView && r.campaignSearchTermView.searchTerm) || '';
-    if (!term) return;
-    addTo_(acc, [month, String(r.campaign.id), r.campaign.name, term].join('||'), r);
-  });
+
+  // ONE QUERY PER MONTH, and deliberately NO segments.date.
+  //
+  // This is not a style choice — it is what makes the click threshold mean what it
+  // says. With segments.date selected, every returned row is a term-DAY, so
+  // `metrics.clicks > 5` in the WHERE would demand five clicks IN ONE DAY. A term
+  // with four clicks a day for a month — 120 clicks, comfortably top-of-slide — would
+  // be dropped entirely, and nothing about the output would look wrong.
+  //
+  // Without the date segment, metrics aggregate over the WHERE range. Bounding that
+  // range to a single calendar month therefore makes the threshold "clicks in the
+  // month", and lets the month be stamped from the loop rather than read off a row.
+  // It also collapses the result from one row per term-day to one per term.
+  for (var m = 0; m < range.months.length; m++) {
+    var mo = range.months[m];
+
+    // The campaign fields come along as attributed resources, which is what lets one
+    // query cover every PMax campaign rather than one query per campaign.
+    var q = 'SELECT campaign_search_term_view.search_term, campaign.id, campaign.name, ' +
+      'metrics.impressions, metrics.clicks, metrics.cost_micros, ' +
+      'metrics.conversions, metrics.conversions_value ' +
+      'FROM campaign_search_term_view ' +
+      'WHERE segments.date BETWEEN "' + mo.start + '" AND "' + mo.end + '" ' +
+      'AND campaign.advertising_channel_type = "PERFORMANCE_MAX" ' +
+      (CONFIG.TERM_MIN_CLICKS > 0
+        ? 'AND metrics.clicks > ' + CONFIG.TERM_MIN_CLICKS + ' '
+        : 'AND metrics.impressions > 0 ');
+
+    var month = mo.month, seen = 0;
+    eachRow_(q, function (r) {
+      var term = (r.campaignSearchTermView && r.campaignSearchTermView.searchTerm) || '';
+      if (!term) return;
+      addTo_(acc, [month, String(r.campaign.id), r.campaign.name, term].join('||'), r);
+      seen++;
+    });
+    Logger.log('PMax search terms ' + month + ': ' + seen + ' term(s) with more than ' +
+      CONFIG.TERM_MIN_CLICKS + ' click(s)');
+  }
 
   // Ranked BY IMPRESSIONS, not by conversion value. Slide 10 sorts by traffic, and
   // truncating by value first would drop the high-traffic zero-conversion terms —
@@ -742,7 +788,7 @@ function fetchPmaxCategories_(range) {
  * from whichever shape came back and fall back to blank.
  */
 function searchVolumeOf_(r) {
-  var m = r.metrics || {};
+  var m = met_(r);
   if (m.searchVolume === undefined || m.searchVolume === null) return '';
   var v = m.searchVolume;
   // Could be a scalar or a {min,max} range object depending on version.
@@ -785,11 +831,11 @@ function fetchAssets_(range) {
                (asset.textAsset && asset.textAsset.text) || '';
     if (!text) return;
     rows.push([
-      r.segments.date, r.campaign.name,
+      seg_(r).date, r.campaign.name,
       (r.campaignAsset && r.campaignAsset.fieldType) || asset.type || '',
       text,
-      n_(r.metrics.impressions), n_(r.metrics.clicks), micros_(r.metrics.costMicros),
-      n_(r.metrics.conversions), n_(r.metrics.conversionsValue),
+      n_(met_(r).impressions), n_(met_(r).clicks), micros_(met_(r).costMicros),
+      n_(met_(r).conversions), n_(met_(r).conversionsValue),
     ]);
   });
   return rows;
@@ -803,13 +849,30 @@ function eachRow_(query, fn) {
 }
 
 /** Accumulate metrics under a '||'-joined key. */
+/**
+ * `r.segments` / `r.metrics`, guaranteed to be objects.
+ *
+ * **The API OMITS these containers entirely rather than returning empty values.** A
+ * query selecting only `segments.product_custom_attribute0` gets rows with no
+ * `segments` key at all for every product where that label is unset — so
+ * `r.segments[key]` throws `Cannot read properties of undefined`, killing the whole
+ * report rather than recording "(not set)".
+ *
+ * Queries that also select `segments.date` never hit this, because the date is always
+ * populated and its presence keeps the container alive. That is exactly why this was
+ * missed: every other report here selects a date.
+ */
+function seg_(r) { return r.segments || {}; }
+function met_(r) { return r.metrics || {}; }
+
 function addTo_(acc, key, r) {
   var g = acc[key] || (acc[key] = { key: key, impressions: 0, clicks: 0, cost: 0, conversions: 0, value: 0 });
-  g.impressions += n_(r.metrics.impressions);
-  g.clicks      += n_(r.metrics.clicks);
-  g.cost        += micros_(r.metrics.costMicros);
-  g.conversions += n_(r.metrics.conversions);
-  g.value       += n_(r.metrics.conversionsValue);
+  var m = met_(r);
+  g.impressions += n_(m.impressions);
+  g.clicks      += n_(m.clicks);
+  g.cost        += micros_(m.costMicros);
+  g.conversions += n_(m.conversions);
+  g.value       += n_(m.conversionsValue);
 }
 
 /**
@@ -866,6 +929,37 @@ function dateRange_(monthsBack) {
   };
 }
 
+/**
+ * The last `monthsBack` COMPLETE calendar months, as
+ * { start, end, months: [{ month:'yyyy-MM', start, end }] }.
+ *
+ * Complete months only, and no trailing partial month, because the caller queries each
+ * month as a whole and compares a monthly metric total against a threshold. Including
+ * a half-finished month would apply that threshold to half a month of clicks and drop
+ * terms for being early rather than for being small.
+ */
+function monthRange_(monthsBack) {
+  var tz = AdsApp.currentAccount().getTimeZone();
+  var now = new Date();
+  var months = [];
+
+  for (var back = monthsBack; back >= 1; back--) {
+    var first = new Date(now.getFullYear(), now.getMonth() - back, 1);
+    var last = new Date(first.getFullYear(), first.getMonth() + 1, 0);
+    months.push({
+      month: Utilities.formatDate(first, tz, 'yyyy-MM'),
+      start: Utilities.formatDate(first, tz, 'yyyy-MM-dd'),
+      end: Utilities.formatDate(last, tz, 'yyyy-MM-dd'),
+    });
+  }
+
+  return {
+    start: months[0].start,
+    end: months[months.length - 1].end,
+    months: months,
+  };
+}
+
 // ============================== SHEET I/O ==================================
 
 function writeTab_(ss, name, header, rows) {
@@ -896,14 +990,16 @@ function writeTab_(ss, name, header, rows) {
   Logger.log('Wrote ' + name + ': ' + rows.length + ' rows');
 }
 
-function writeStatus_(ss, log, range, detailRange, accounts) {
+function writeStatus_(ss, log, range, detailRange, termRange, accounts) {
   var sheet = ss.getSheetByName(CONFIG.TAB_STATUS) || ss.insertSheet(CONFIG.TAB_STATUS);
   sheet.clear();
   sheet.getRange(1, 1).setValue('Google Ads engine feed — last run').setFontWeight('bold').setFontSize(12);
   sheet.getRange(2, 1).setValue('finished ' + Utilities.formatDate(new Date(),
     AdsApp.currentAccount().getTimeZone(), 'yyyy-MM-dd HH:mm:ss z'));
   sheet.getRange(3, 1).setValue('window ' + range.start + ' → ' + range.end +
-    '   ·   detail window ' + detailRange.start + ' → ' + detailRange.end);
+    '   ·   detail window ' + detailRange.start + ' → ' + detailRange.end +
+    '   ·   search terms ' + termRange.months.map(function (m) { return m.month; }).join(', ') +
+    ' (clicks > ' + CONFIG.TERM_MIN_CLICKS + ')');
   sheet.getRange(4, 1).setValue('accounts: ' + accounts.map(function (a) { return a.label; }).join(', '));
 
   var header = ['tab', 'status', 'errors', 'rows'];

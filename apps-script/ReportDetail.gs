@@ -268,10 +268,21 @@ function renderPmaxCategoryBlock_(w, ctx) {
   // only still read so an existing sheet renders something until the MCC script next
   // runs with the new query.
   var manual = readPmaxManual_(month);
-  var terms = readEngineTab_(ENGINE_PMAXTERM_SHEET)
-    .filter(function (r) { return monthOf_(r.month) === month; });
+  var allTerms = readEngineTab_(ENGINE_PMAXTERM_SHEET);
+  var terms = allTerms.filter(function (r) { return monthOf_(r.month) === month; });
   var cats = readEngineTab_(ENGINE_PMAXCAT_SHEET)
     .filter(function (r) { return monthOf_(r.month) === month; });
+
+  // The search-terms feed keeps a SHORT window (CONFIG.TERM_MONTHS_BACK, normally one
+  // month) and rewrites the tab each run, so asking for an older month finds nothing
+  // even though the tab is full. Name the months it does hold — otherwise this looks
+  // identical to the query having failed, and the two need completely different fixes.
+  var termMonths = {};
+  for (var tm = 0; tm < allTerms.length; tm++) {
+    var mk = monthOf_(allTerms[tm].month);
+    if (mk) termMonths[mk] = true;
+  }
+  var haveMonths = Object.keys(termMonths).sort();
 
   var raw, source;
   if (manual.rows.length)   { raw = manual.rows; source = 'manual'; }
@@ -322,11 +333,23 @@ function renderPmaxCategoryBlock_(w, ctx) {
   } else if (source === 'terms') {
     note = 'Google Ads campaign_search_term_view, filtered to Performance Max campaigns. That is ' +
       'the only resource returning RAW search terms for PMax: search_term_view returns no PMax data ' +
-      'at all, and the search-term-INSIGHT resources return category labels rather than terms.';
+      'at all, and the search-term-INSIGHT resources return category labels rather than terms. The ' +
+      'feed drops terms below a minimum monthly click count (CONFIG.TERM_MIN_CLICKS in ' +
+      'engine-report.js, normally 5) — the tail of a search-term report is thousands of one-click ' +
+      'queries that could never reach a ' + PMAX_CAT_ROWS + '-row table.';
   } else if (source === 'categories') {
     note = '⚠  Showing search CATEGORIES, not terms — the "' + ENGINE_PMAXTERM_SHEET + '" tab is ' +
       'empty, so this is falling back to the older "' + ENGINE_PMAXCAT_SHEET + '" tab. Re-paste and ' +
       'Run the MCC Google Ads Script to get actual search terms.';
+  } else if (haveMonths.length) {
+    // The commonest empty case now, and NOT a failure: the feed keeps one month and
+    // you asked for a different one.
+    note = 'EMPTY for ' + month + ', but the "' + ENGINE_PMAXTERM_SHEET + '" tab holds ' +
+      haveMonths.join(', ') + '. The search-terms feed keeps a short window ' +
+      '(CONFIG.TERM_MONTHS_BACK in engine-report.js, normally 1 month) and rewrites the tab each ' +
+      'run, because search terms are the highest-cardinality report in the feed. To report an older ' +
+      'month either raise TERM_MONTHS_BACK and re-run the MCC script, or paste that month into the "' +
+      PMAXCAT_MANUAL_SHEET + '" tab. Nothing is broken.';
   } else {
     note = 'EMPTY. Two ways to fill it:  (1) AUTOMATED — re-paste and Run the MCC Google Ads Script. ' +
       'It queries campaign_search_term_view, which is the resource that actually returns PMax search ' +
@@ -338,7 +361,8 @@ function renderPmaxCategoryBlock_(w, ctx) {
   if (brandTerms) {
     note += '  Excluded ' + brandTerms + ' brand term(s): ' +
       Math.round(brandImpr).toLocaleString() + ' impressions, ' +
-      currencySymbol_() + Math.round(brandCost).toLocaleString() + ' cost. Brand is ' +
+      currencySymbol_() + Math.round(brandCost).toLocaleString() + ' cost (of terms above the ' +
+      'feed\'s click threshold, so not the account\'s whole brand volume). Brand is ' +
       'matched by BRAND_TERM_RE in Config.gs — the brand name and its common misspellings, but ' +
       'deliberately NOT model names like "prio" or "hfs", since counting those as brand would empty ' +
       'this slide of the discovery terms it exists to show.';

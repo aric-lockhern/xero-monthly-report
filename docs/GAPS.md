@@ -100,6 +100,33 @@ candidates fail in ways that look like "there is no data" rather than like a mis
 So `fetchPmaxSearchTerms_` queries `campaign_search_term_view` filtered to
 `campaign.advertising_channel_type = 'PERFORMANCE_MAX'`, into `_eng_pmax_term`.
 
+**Scoped deliberately narrowly**, because this is the highest-cardinality report in
+the feed — every distinct query a PMax campaign matched:
+
+- **One month** (`TERM_MONTHS_BACK: 1`). Slide 10 is a single-month view. The tab is
+  rewritten each run, so a window of 1 means only the latest month is on it; raise it
+  to 2–3 if you expect to rebuild past months' decks. When you ask for a month the tab
+  no longer holds, the block **names the months it does hold** and says nothing is
+  broken — that empty is not a failed query, and the two need different fixes.
+- **Minimum 5 clicks in the month** (`TERM_MIN_CLICKS`). The tail is thousands of
+  one-click queries that could never reach a 16-row table.
+
+> **The threshold and the date segment interact, and getting it wrong is invisible.**
+> With `segments.date` selected, every row is a term-**day**, so `metrics.clicks > 5`
+> in the `WHERE` means *five clicks in a single day*. A term with four clicks a day for
+> a month — 120 clicks, comfortably top-of-slide — would be dropped, and nothing about
+> the output would look wrong.
+>
+> So the query selects **no date segment** and runs **one query per calendar month**,
+> bounded by the `WHERE` range. Metrics then aggregate over the month, the threshold
+> means "clicks in the month", the month is stamped from the loop rather than read off
+> a row, and the result collapses from one row per term-day to one per term.
+>
+> Neither this nor the keyword-segment trap below can be caught by any local test —
+> both are GAQL semantics only Google evaluates, and the query still parses and still
+> returns plausible rows. `tools/harness.js` therefore asserts them **against the
+> source**.
+
 > **Never add a keyword-related segment to that query** — `keyword.info.text` and
 > friends. Google documents that doing so filters out every Performance Max row. The
 > query still succeeds and still returns Search rows, so the symptom is "PMax
