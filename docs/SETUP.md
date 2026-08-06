@@ -181,22 +181,33 @@ Runs inside Google Ads: no developer token, no OAuth client, no GCP project.
 Google Ads **MCC** → Tools → Bulk actions → **Scripts** → **+** → paste
 `google-ads-script/engine-report.js`.
 
-### B2. Configure
+### B2. Configure — already done for US
 
 ```js
 var CONFIG = {
-  SPREADSHEET_ID: '1XyZ…',   // the MONTHLY REPORT sheet, not Triple Whale
-  CUSTOMER_IDS: [],          // [] = every account under this MCC
-  MONTHS_BACK: 14,
+  SPREADSHEET_ID: '1ZZBv5X0mNhSnJAezGy_dk7gKmKyej-VFglUcrvRJ59M',  // US report sheet
+  CUSTOMER_IDS: ['602-681-1446'],                                   // Xero Shoes US
+  MONTHS_BACK: 26,
   DETAIL_MONTHS_BACK: 3,
   …
 };
 ```
 
-Set `CUSTOMER_IDS` to just the region's accounts, e.g.
-`['123-456-7890']`. **Keep US and EU as separate script runs writing to separate
-spreadsheets** — mixing currencies in one set of tabs would silently add dollars
-to euros.
+**For the US account there is nothing to change** — the spreadsheet id and the
+customer id are pinned, so re-pasting this file never means re-typing them.
+
+**For the EU deployment, change BOTH.** The two are a pair: a spreadsheet id
+pointing at one region with `CUSTOMER_IDS: []` would sweep every account under the
+MCC — other clients included — into these tabs. Keep US and EU as separate script
+runs writing to separate spreadsheets; nothing here converts currency, so mixing
+them adds euros to dollars.
+
+> **The script refuses to get that wrong silently.** Before running any query it
+> compares each account's currency against `CURRENCY` on the spreadsheet's
+> `Settings` tab and **throws on a mismatch**, leaving the tabs with their previous
+> good data. So running the EU MCC against the US sheet costs you a clear error
+> rather than a deck reporting the sum of two currencies. The check skips itself if
+> the `Settings` tab names no currency, so it can't block a first-time setup.
 
 ### B3. Authorise and run
 

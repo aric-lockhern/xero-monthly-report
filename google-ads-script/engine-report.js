@@ -28,16 +28,26 @@
 var CONFIG = {
   // The MONTHLY REPORT spreadsheet — the one the Apps Script project is bound
   // to. NOT the Triple Whale spreadsheet.
-  SPREADSHEET_ID: '',
+  //
+  // Defaulted to the US sheet ("Xero Shoes — Monthly Report (US)") so re-pasting
+  // this file does not mean re-typing the id every time.
+  //
+  // ⚠  THIS IS THE US SHEET. For the EU deployment, change it to the EU reporting
+  // spreadsheet's id. The currency guard below catches getting that wrong — it
+  // refuses to write EUR accounts into a sheet configured for USD, because mixing
+  // currencies in one set of tabs adds euros to dollars and nothing looks broken.
+  SPREADSHEET_ID: '1ZZBv5X0mNhSnJAezGy_dk7gKmKyej-VFglUcrvRJ59M',
 
   // Accounts to pull, as customer ids ('123-456-7890' or '1234567890').
-  // Leave [] to use every account under the MCC this script runs in, or to just
-  // use the current account when run from inside a single account.
+  // [] means every account under the MCC this script runs in — which is wrong for
+  // this project, because that would sweep other clients' accounts into the Xero
+  // Shoes tabs. So it is pinned to the one account that pairs with the spreadsheet
+  // above.
   //
-  // Keep US and EU accounts in SEPARATE runs writing to SEPARATE spreadsheets —
-  // the Apps Script side is one-region-per-sheet, and mixing currencies in one
-  // set of tabs would silently add dollars to euros.
-  CUSTOMER_IDS: [],
+  // Xero Shoes US: 602-681-1446. For the EU deployment, put the EU account here
+  // AND change SPREADSHEET_ID — one region per spreadsheet, since nothing here
+  // converts currency and mixing them would add euros to dollars.
+  CUSTOMER_IDS: ['602-681-1446'],
 
   // How many months of daily history to (re)write each run.
   //
@@ -131,6 +141,8 @@ function main() {
   var accounts = resolveAccounts_();
   Logger.log('Accounts: ' + accounts.map(function (a) { return a.label; }).join(', '));
 
+  assertCurrencyMatches_(ss, accounts);
+
   // Each report is collected across all accounts, then written once. Every one is
   // isolated: a GAQL field that has been renamed in a newer API version fails
   // that report alone, is recorded on the status tab, and the rest still land.
@@ -188,18 +200,11 @@ function main() {
  */
 function applySpreadsheetSettings_(ss) {
   var notes = [];
-  var sheet = ss.getSheetByName(CONFIG.TAB_SETTINGS);
-  if (!sheet || sheet.getLastRow() < 2) {
+  var stored = readSheetSettings_(ss);
+  if (!stored) {
     return 'No "' + CONFIG.TAB_SETTINGS + '" tab — using script defaults: ' +
       CONFIG.PRODUCT_DIM_1 + ' / ' + CONFIG.PRODUCT_DIM_2 +
       '. Run Monthly Report → Setup → Settings in the spreadsheet to create it.';
-  }
-
-  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getValues();
-  var stored = {};
-  for (var i = 0; i < values.length; i++) {
-    var key = String(values[i][0] || '').trim();
-    if (key) stored[key] = values[i][1];
   }
 
   ['PRODUCT_DIM_1', 'PRODUCT_DIM_2'].forEach(function (key) {
@@ -220,6 +225,69 @@ function applySpreadsheetSettings_(ss) {
 
   return 'Slide 8 dimensions: ' + CONFIG.PRODUCT_DIM_1 + ' × ' + CONFIG.PRODUCT_DIM_2 +
     (notes.length ? '  ·  ' + notes.join('; ') : '  ·  no override on the Settings tab');
+}
+
+/** The reporting spreadsheet's `Settings` tab as { KEY: value }, or null if absent. */
+function readSheetSettings_(ss) {
+  var sheet = ss.getSheetByName(CONFIG.TAB_SETTINGS);
+  if (!sheet || sheet.getLastRow() < 2) return null;
+
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getValues();
+  var out = {};
+  for (var i = 0; i < values.length; i++) {
+    var key = String(values[i][0] || '').trim();
+    if (key) out[key] = values[i][1];
+  }
+  return out;
+}
+
+/**
+ * Refuse to write accounts into a spreadsheet configured for a different currency.
+ *
+ * WHY THIS IS WORTH A HARD FAILURE
+ * ---------------------------------------------------------------------------
+ * CONFIG.SPREADSHEET_ID is defaulted to the US sheet so it survives re-pasting.
+ * That convenience creates exactly one new way to be wrong: running this from the
+ * EU MCC without changing it, which writes EUR costs into tabs the Apps Script
+ * sums as USD. Nothing errors, no cell looks odd, and the deck reports a spend
+ * figure that is the sum of two currencies.
+ *
+ * The account knows its currency and the Settings tab states the sheet's, so this
+ * is checkable rather than a matter of remembering. Throwing BEFORE any query runs
+ * means a wrong pairing costs a clear error, not a corrupted tab — the previous
+ * good data is untouched.
+ *
+ * Silent when it cannot know: no Settings tab, no CURRENCY value, or an account
+ * whose currency the API won't report all pass, because refusing to run on missing
+ * information would block a first-time setup for no safety gain.
+ */
+function assertCurrencyMatches_(ss, accounts) {
+  var stored = readSheetSettings_(ss) || {};
+  var expected = String(stored.CURRENCY === undefined ? '' : stored.CURRENCY).trim().toUpperCase();
+  if (!expected) {
+    Logger.log('Currency guard: the Settings tab names no CURRENCY, so nothing to check against.');
+    return;
+  }
+
+  var mismatched = [], unknown = 0;
+  for (var i = 0; i < accounts.length; i++) {
+    var got = accounts[i].currency;
+    if (!got) { unknown++; continue; }
+    if (got.toUpperCase() !== expected) mismatched.push(accounts[i].label + ' is in ' + got);
+  }
+
+  if (mismatched.length) {
+    throw new Error('CURRENCY MISMATCH — refusing to write, so the tabs keep their previous good ' +
+      'data. The spreadsheet "' + ss.getName() + '" is configured for ' + expected +
+      ' on its Settings tab, but ' + mismatched.length + ' of ' + accounts.length +
+      ' account(s) report a different currency: ' + mismatched.join('; ') + '. ' +
+      'Either point CONFIG.SPREADSHEET_ID at that region\'s own reporting spreadsheet, or limit ' +
+      'CONFIG.CUSTOMER_IDS to the accounts belonging to this one. One region per spreadsheet — ' +
+      'nothing here converts currency, so mixing them adds euros to dollars.');
+  }
+
+  Logger.log('Currency guard: ' + (accounts.length - unknown) + ' account(s) confirmed as ' +
+    expected + (unknown ? ', ' + unknown + ' did not report a currency' : '') + '.');
 }
 
 /**
@@ -254,7 +322,9 @@ function resolveDimField_(input) {
 function resolveAccounts_() {
   var isMcc = typeof AdsManagerApp !== 'undefined';
   if (!isMcc) {
-    return [{ id: AdsApp.currentAccount().getCustomerId(), label: AdsApp.currentAccount().getName(), mcc: false }];
+    var cur = AdsApp.currentAccount();
+    return [{ id: cur.getCustomerId(), label: cur.getName(), mcc: false,
+              currency: currencyOf_(cur) }];
   }
 
   var sel = AdsManagerApp.accounts();
@@ -263,7 +333,8 @@ function resolveAccounts_() {
   var out = [], it = sel.get();
   while (it.hasNext()) {
     var acc = it.next();
-    out.push({ id: acc.getCustomerId(), label: acc.getName() + ' (' + acc.getCustomerId() + ')', account: acc, mcc: true });
+    out.push({ id: acc.getCustomerId(), label: acc.getName() + ' (' + acc.getCustomerId() + ')',
+               account: acc, mcc: true, currency: currencyOf_(acc) });
   }
   if (!out.length) {
     throw new Error('No accounts matched. CONFIG.CUSTOMER_IDS = [' + CONFIG.CUSTOMER_IDS.join(', ') +
@@ -273,6 +344,22 @@ function resolveAccounts_() {
 }
 
 function selectAccount_(acc) { if (acc.mcc) AdsManagerApp.select(acc.account); }
+
+/**
+ * An account's currency, or '' if this Ads Scripts version does not expose it.
+ *
+ * Defensive rather than assumed: getCurrencyCode() exists on both Account and
+ * ManagedAccount, but a guard that throws when its own probe is unavailable would
+ * be worse than the problem it prevents.
+ */
+function currencyOf_(acc) {
+  try {
+    var c = acc.getCurrencyCode && acc.getCurrencyCode();
+    return c ? String(c).trim() : '';
+  } catch (e) {
+    return '';
+  }
+}
 
 function normalizeId_(id) { return String(id).replace(/-/g, '').replace(/^(\d{3})(\d{3})(\d{4})$/, '$1-$2-$3'); }
 

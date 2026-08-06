@@ -185,10 +185,15 @@ half-filled client table is worse than an empty one because it looks finished.
 Google Ads **MCC** → Tools → Bulk actions → Scripts → **+** → paste
 `google-ads-script/engine-report.js`.
 
+For **US, nothing to configure** — both ids are pinned in the file:
+
 ```js
-SPREADSHEET_ID: '1XyZ…',        // the MONTHLY REPORT sheet, not Triple Whale
-CUSTOMER_IDS: ['123-456-7890'], // just this region's accounts
+SPREADSHEET_ID: '1ZZBv5X0mNhSnJAezGy_dk7gKmKyej-VFglUcrvRJ59M',  // US report sheet
+CUSTOMER_IDS: ['602-681-1446'],                                   // Xero Shoes US
 ```
+
+For **EU, change both** — they are a pair, and a pinned sheet with `CUSTOMER_IDS: []`
+would sweep the whole MCC into it.
 
 **Preview**, then **Run**.
 
@@ -252,6 +257,13 @@ copy with the EU `CUSTOMER_IDS` and the EU `SPREADSHEET_ID`.
 > **Never point both regions at one spreadsheet.** There's no FX conversion
 > anywhere — `CURRENCY` only picks a number format — so a shared sheet would add
 > euros to dollars silently.
+>
+> The Ads script enforces this rather than trusting it: it compares each account's
+> currency against `CURRENCY` on the target spreadsheet's `Settings` tab and
+> **throws before running any query** if they disagree, leaving the tabs with their
+> previous good data. Since `SPREADSHEET_ID` now defaults to the US sheet, that
+> guard is what makes forgetting to change it a loud failure rather than a quiet
+> one.
 
 ---
 

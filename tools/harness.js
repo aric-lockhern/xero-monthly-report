@@ -683,6 +683,21 @@ if (!ARGS.quiet) console.log('\nSLIDE 10 MANUAL PASTE (loose column matching)');
   if (!fn) die('could not find resolveDimField_ in engine-report.js');
   vm.runInContext(fn[0], adsCtx);
 
+  // The Ads script's pinned defaults. Both are hardcoded so re-pasting the file
+  // does not mean re-typing them, and that convenience creates one way to be wrong:
+  // a SPREADSHEET_ID pointing at a specific client's sheet while CUSTOMER_IDS is []
+  // means "every account under this MCC", which sweeps other clients' spend into
+  // these tabs. Pin the pairing so a future edit cannot half-undo it.
+  {
+    const cfg = adsSrc.match(/SPREADSHEET_ID:\s*'([^']*)'/);
+    const ids = adsSrc.match(/CUSTOMER_IDS:\s*\[([^\]]*)\]/);
+    const hasSheet = !!(cfg && cfg[1].trim());
+    const hasIds = !!(ids && ids[1].trim());
+    if (!ARGS.quiet) console.log('\nADS SCRIPT PINNED DEFAULTS');
+    expectEq('ads defaults', 'a pinned spreadsheet is paired with pinned account ids',
+      hasSheet === hasIds, true);
+  }
+
   const vocab = vm.runInContext('PRODUCT_DIM_VOCAB.map(function (v) { return v; })', context);
   const inputs = [];
   vocab.forEach(([field, label]) => inputs.push(field, label));
