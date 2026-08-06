@@ -215,6 +215,14 @@ engine feed also truncates by impressions for the same reason.
 driver" card. Orders/Revenue here are **engine-reported** — Google does not
 attribute Triple Whale revenue to individual items.
 
+Images come from the Shopping feed via the `Product Images` tab, matched in five
+escalating strategies because Merchant Center rules rewrite the title and out-of-stock
+size variants drop out of the feed. **Parent id narrows to the product; the title picks
+the colourway** — parent id alone would put a grey shoe under a coral shoe's name.
+Several colourways with no title match resolves to no image on purpose. Every match is
+labelled with the strategy that produced it in `Setup → Product image status`.
+GAPS §6.
+
 ### Slide 12 — Promotion recap (`RPT_PROMO_SUMMARY`, `RPT_PROMO_ASSETS`)
 Windows come from the `Promos` tab. For each promo the summary gives four rows:
 

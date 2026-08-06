@@ -184,26 +184,64 @@ aspect ratio rather than stretched — product shots are near-square, the frames
 portrait, and a distorted shoe on a client deck is worse than a slightly smaller
 one.
 
-Matching is by **title first, then item id** — and the title key is lower-cased with
-every non-alphanumeric character stripped.
+Matching runs five strategies, each strictly more speculative than the last, and
+**every result is labelled with which one fired** so a fuzzy hit is auditable rather
+than invisible.
 
-Both of those are deliberate, and both come from real misses:
+| # | Strategy | When it fires |
+|---|---|---|
+| 1 | exact title | GMC has not rewritten the title |
+| 2 | exact item id | the variant is present in the feed |
+| 3 | **parent id + title containment** | GMC rewrote the title (the normal case here) |
+| 4 | parent id, single colourway | only one photo under that product, so unambiguous |
+| 5 | title containment, no parent | different id schemes, or a title-only feed row |
 
-- **Title before id.** A Shopping feed carries one row per **size variant**, each with
-  its own item id, and an out-of-stock variant drops out of the feed entirely. So the
-  exact id Google Ads reports may simply not be in the feed — while its sibling sizes
-  are, sharing the title and therefore the photograph. For *imagery* the title is the
-  correct key, because everything sharing a title looks identical.
-- **Punctuation stripped, not just whitespace collapsed.** The feed and the Ads report
-  disagree about punctuation: `Light Gray / Pink Sand` versus `Light Gray/Pink Sand`
-  is the same product with different spaces around one slash. Under whitespace-only
-  normalisation those are different keys and the frame silently stays empty. Safe to
-  collapse this hard because the title carries the colourway, so two genuinely
-  different products cannot normalise to the same key.
+Two independent things defeat the obvious lookups, and both are real here:
 
-**Deliberately NOT attempted:** matching on the item id's product-level prefix
-(`shopify_us_<product>_<variant>` → `shopify_us_<product>`). One Shopify product can
-span several colourways, so that would resolve a pink shoe to a grey one.
+**Merchant Center rules and supplemental feeds rewrite the title.** What Google Ads
+reports is not what the raw feed contains — GMC *wraps* it:
+
+```
+feed   "HFS Original - Women - Light Gray / Pink Sand"
+Ads    "Xero Shoes - Barefoot Shoes - HFS Original - Women - Light Gray / Pink Sand - Zero Drop Shoes"
+```
+
+The feed title is a **substring** of the reported one. That is what makes containment
+the right tool rather than a fudge, and it is why the match key strips punctuation and
+case: `Light Gray / Pink Sand` and `Light Gray/Pink Sand` differ only in spaces around
+a slash, and whitespace-only normalisation treats them as different products.
+
+**The feed carries one row per SIZE, and an out-of-stock size drops out.** So the exact
+item id Google Ads reports may be absent while its siblings are present — sharing the
+title, and therefore the photograph.
+
+### Why parent id ALONE is not the answer
+
+It is the obvious fix and it is wrong, which this feed proves. Product
+`8568611930290` spans:
+
+```
+360 - Women (Clearance) - Asphalt / Gray
+360 - Women (Clearance) - Sunset Coral / Black / Gum
+360 - Women (Clearance) - Faded Black
+```
+
+Three colourways, three photographs, **one parent id**. Matching on the parent would
+put a grey shoe under a coral shoe's name — and nothing about the slide would look
+wrong.
+
+So the parent id **narrows** to the right product and the title **picks the colourway
+within it**. Longest containment wins, because Xero names variants such that one title
+is a prefix of another ("Faded Black" / "Faded Black / Gum") and only the longer match
+names the right shoe.
+
+**When several colourways share a parent and the title matches none, this resolves to
+NO image on purpose** and says "ambiguous — N colourways". Refusing to answer is the
+correct answer: an empty frame is a ten-second fix, a confidently wrong photograph on
+a client deck is not.
+
+The global fallback (5) carries a **minimum title length**, because a feed row titled
+`Men` would otherwise be a substring of half the catalogue.
 
 When a product still doesn't resolve, `Setup → Product image status` prints the key it
 looked for and the **closest titles in the feed**, which separates the two cases that

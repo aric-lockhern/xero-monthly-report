@@ -3147,23 +3147,67 @@ function ensureProductImageTab_() {
   return sheet;
 }
 
-/** Read the map as { byId: {...}, byTitle: {...}, count: n }. */
+/**
+ * Read the map.
+ *
+ *   byId      exact item id      → url
+ *   byTitle   exact title key    → url
+ *   byParent  PRODUCT-level id   → [{ titleKey, url }]   (one entry per colourway)
+ *   variants  every row          → [{ titleKey, url }]   (global fallback)
+ */
 function readProductImages_() {
-  var out = { byId: {}, byTitle: {}, count: 0 };
+  var out = { byId: {}, byTitle: {}, byParent: {}, variants: [], count: 0 };
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PRODUCT_IMAGE_SHEET);
   if (!sheet || sheet.getLastRow() < 2) return out;
 
   var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 3).getValues();
+  var seen = {};
   for (var i = 0; i < values.length; i++) {
     var id = String(values[i][0] || '').trim();
     var title = String(values[i][1] || '').trim();
     var url = String(values[i][2] || '').trim();
     if (!url) continue;
+
+    var titleKey = title ? normTitle_(title) : '';
     if (id) out.byId[id.toLowerCase()] = url;
-    if (title) out.byTitle[normTitle_(title)] = url;
+    if (titleKey) out.byTitle[titleKey] = url;
+
+    // A feed carries one row per SIZE, so the same (parent, title, url) arrives
+    // dozens of times. Collapse to one entry per distinct colourway — the size is
+    // irrelevant to a photograph and dozens of copies just slow the scan.
+    var parent = parentIdOf_(id);
+    var dedupe = parent + '||' + titleKey + '||' + url;
+    if (!seen[dedupe]) {
+      seen[dedupe] = true;
+      var entry = { titleKey: titleKey, url: url, id: id };
+      if (parent) (out.byParent[parent] || (out.byParent[parent] = [])).push(entry);
+      if (titleKey) out.variants.push(entry);
+    }
     out.count++;
   }
   return out;
+}
+
+/**
+ * The PRODUCT-level part of a Shopify-style item id: the variant segment removed.
+ *
+ *   shopify_us_8568611930290_46975376752818  →  shopify_us_8568611930290
+ *
+ * Returns '' when the id has no variant segment to strip, because then the parent is
+ * the id itself and exact-id matching has already had its turn — treating it as a
+ * parent would only add false positives.
+ */
+function parentIdOf_(id) {
+  var s = String(id || '').trim().toLowerCase();
+  // Strip the LAST underscore-delimited numeric segment, and only when what remains
+  // also ends in a numeric segment — that is what distinguishes
+  // `shopify_us_<product>_<variant>` from a plain SKU like `xs-prio-neo-m`.
+  //
+  // Deliberately no minimum digit count. Shopify variant ids happen to be long, but
+  // betting the matcher on how many digits Shopify uses is exactly the kind of
+  // assumption that silently stops matching when a feed changes.
+  var m = s.match(/^(.+_\d+)_\d+$/);
+  return m ? m[1] : '';
 }
 
 /**
@@ -3186,29 +3230,106 @@ function normTitle_(t) {
   return String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
-/**
- * Resolve one product's image URL. **Title first, item id second.**
- *
- * Title wins because of how the feed and the Ads report disagree. A Shopping feed
- * carries one row per VARIANT (size), each with its own item id, and an
- * out-of-stock variant drops out of the feed entirely — so the exact id Google Ads
- * reports may not be in the feed at all. Its sibling sizes are, and they share the
- * title and therefore the photograph. Matching on the title finds them; matching on
- * the id gives up.
- *
- * This is a change of preference, not of correctness: for IMAGERY the title is the
- * right key, because everything sharing a title looks identical. Ids stay as the
- * second try so a hand-pasted id-only row still works.
- *
- * Deliberately NOT attempted: matching on the item id's product-level prefix
- * (`shopify_us_<product>_<variant>` → `shopify_us_<product>`). One Shopify product
- * can span several colourways, so that would resolve a pink shoe to a grey one —
- * and the wrong photo beside a product name is worse than a visible gap.
- */
+// Below this many characters, a title key is too generic to match by containment
+// without risking a wrong photo. Applies ONLY to the global fallback; inside a single
+// parent product there is nothing generic left to confuse.
+var TITLE_CONTAINS_MIN = 12;
+
+/** Resolve one product's image URL, or '' — see productImageMatch_ for the strategy. */
 function productImageUrl_(map, itemId, title) {
-  var byTitle = map.byTitle[normTitle_(title)];
-  if (byTitle) return byTitle;
-  return map.byId[String(itemId || '').trim().toLowerCase()] || '';
+  return productImageMatch_(map, itemId, title).url;
+}
+
+/**
+ * Resolve one product's image, returning { url, how } so a miss — or a fuzzy hit —
+ * can be explained rather than guessed at.
+ *
+ * WHY THIS NEEDS FIVE STRATEGIES
+ * ---------------------------------------------------------------------------
+ * Two independent things break the obvious lookups:
+ *
+ * 1. Merchant Center rules and supplemental feeds REWRITE THE TITLE, so the title
+ *    Google Ads reports is not the title in the raw feed. Here GMC wraps it:
+ *      feed  "HFS Original - Women - Light Gray / Pink Sand"
+ *      Ads   "Xero Shoes - Barefoot Shoes - HFS Original - Women - Light Gray / Pink Sand - Zero Drop Shoes"
+ *    The feed title is a SUBSTRING of the reported one, which is what makes
+ *    containment the right tool rather than a hack.
+ *
+ * 2. The feed carries one row per SIZE, and an out-of-stock size drops out. So the
+ *    exact item id Google Ads reports may be absent while its siblings are present.
+ *
+ * PARENT ID ALONE IS NOT SAFE, and this feed proves it: product 8568611930290 spans
+ * "360 - Women (Clearance) - Asphalt / Gray", "- Sunset Coral / Black / Gum" and
+ * "- Faded Black". Three colourways, three photographs, one parent id. Matching on
+ * the parent would put a grey shoe under a coral shoe's name.
+ *
+ * So the parent id NARROWS to the right product and the title picks the colourway
+ * within it. Each strategy is strictly more speculative than the last, and every
+ * result is labelled with which one fired.
+ */
+function productImageMatch_(map, itemId, title) {
+  var want = normTitle_(title);
+  var id = String(itemId || '').trim().toLowerCase();
+
+  // 1 · exact title — the happy path, when GMC has not rewritten anything.
+  if (want && map.byTitle[want]) return { url: map.byTitle[want], how: 'exact title' };
+
+  // 2 · exact item id — a hand-pasted id-only row, or an in-stock variant.
+  if (id && map.byId[id]) return { url: map.byId[id], how: 'exact item id' };
+
+  // 3 · same parent product, colourway chosen by title containment. The precise
+  //     answer for a GMC-rewritten title, because the candidate set is already
+  //     restricted to one product.
+  var parent = parentIdOf_(id);
+  var siblings = parent ? map.byParent[parent] : null;
+  if (siblings && siblings.length) {
+    var pick = longestContained_(siblings, want, 0);
+    if (pick) return { url: pick.url, how: 'parent product + title match' };
+
+    // 4 · same parent, and only ONE colourway exists under it — so there is nothing
+    //     to choose wrongly between. Unambiguous, therefore safe.
+    var urls = {};
+    for (var s = 0; s < siblings.length; s++) urls[siblings[s].url] = true;
+    if (Object.keys(urls).length === 1) {
+      return { url: siblings[0].url, how: 'parent product (single colourway)' };
+    }
+    // Several colourways and none matched the title: STOP. Guessing here is the one
+    // way to put the wrong shoe on a client slide.
+    return { url: '', how: 'ambiguous — ' + Object.keys(urls).length +
+      ' colourways under this product and the title matched none' };
+  }
+
+  // 5 · no usable parent (different id scheme, or a title-only feed row): containment
+  //     across every row, longest match wins, with a length floor so a short generic
+  //     title cannot sweep up an unrelated product.
+  var global = longestContained_(map.variants, want, TITLE_CONTAINS_MIN);
+  if (global) return { url: global.url, how: 'title contained (no parent match)' };
+
+  return { url: '', how: 'no match' };
+}
+
+/**
+ * The entry whose title key overlaps `want` by containment, longest first.
+ *
+ * Checks BOTH directions: GMC rules normally add boilerplate (so the feed title sits
+ * inside the reported one), but a supplemental feed can also shorten a title, which
+ * puts the reported one inside the feed's.
+ *
+ * Longest wins because it is the most specific — "360 - Women (Clearance)" and
+ * "360 - Women (Clearance) - Faded Black" can both be contained in the same reported
+ * title, and only the longer one names the right colourway.
+ */
+function longestContained_(entries, want, minLen) {
+  if (!want) return null;
+  var best = null;
+  for (var i = 0; i < entries.length; i++) {
+    var k = entries[i].titleKey;
+    if (!k || k.length < minLen) continue;
+    var hit = want.indexOf(k) !== -1 || (k.length >= want.length && k.indexOf(want) !== -1);
+    if (!hit) continue;
+    if (!best || k.length > best.titleKey.length) best = entries[i];
+  }
+  return best;
 }
 
 // ============================== FEED REFRESH ===============================
@@ -3484,10 +3605,11 @@ function productImageStatus() {
       var title = String(vals[i][0] || '').trim();
       var id = String(vals[i][1] || '').trim();
       if (!title && !id) continue;
-      var url = productImageUrl_(map, id, title);
-      lines.push('  ' + (url ? '✓' : '✗') + '  ' + (title || id).slice(0, 60) +
-        (url ? '' : '   ← no image; frame keeps its placeholder'));
-      if (!url) misses.push({ title: title, id: id });
+      var hit = productImageMatch_(map, id, title);
+      lines.push('  ' + (hit.url ? '✓' : '✗') + '  ' + (title || id).slice(0, 58) +
+        '   [' + hit.how + ']' +
+        (hit.url ? '' : '  ← frame keeps its placeholder'));
+      if (!hit.url) misses.push({ title: title, id: id, how: hit.how });
     }
 
     // For each miss, show the feed titles that come CLOSEST. A bare "no match" tells
@@ -3516,10 +3638,18 @@ function productImageStatus() {
   }
 
   lines.push('');
-  lines.push('Matching is by TITLE first, then item id. Title wins because a Shopping feed carries ' +
-    'one row per size variant and an out-of-stock variant drops out of the feed — so the exact id ' +
-    'Google Ads reports may be missing while its sibling sizes, which share the title and the same ' +
-    'photo, are present.');
+  lines.push('MATCHING, in order — the label in [brackets] above says which one fired:');
+  lines.push('  1  exact title            GMC did not rewrite it');
+  lines.push('  2  exact item id          the variant is in the feed');
+  lines.push('  3  parent + title match   GMC rewrapped the title; the parent id narrows to the');
+  lines.push('                            product and the feed title, being a SUBSTRING of the');
+  lines.push('                            reported one, picks the colourway');
+  lines.push('  4  parent, single colour  only one colourway under that product, so unambiguous');
+  lines.push('  5  title contained        no parent match; longest containing title wins');
+  lines.push('');
+  lines.push('"ambiguous" means several colourways share the product id and none matched the title. ' +
+    'That deliberately resolves to NO image: a grey shoe under a coral shoe\'s name is worse than ' +
+    'an empty frame.');
   lines.push('');
   lines.push('A miss you cannot explain: paste that one product\'s image_url into the "' +
     PRODUCT_IMAGE_SHEET + '" tab by hand. Manual rows survive every refresh, so it sticks.');

@@ -330,14 +330,53 @@ sheets['PMax Categories'] = mockSheet('PMax Categories', [
 // present. On top of that the feed and the Ads report punctuate the title
 // differently: "Light Gray/Pink Sand" here versus "Light Gray / Pink Sand" there.
 // Both have to be tolerated or the frame stays empty.
+// Rows below the separator are LIFTED FROM THE REAL FEED, titles and ids as they
+// actually appear, because the interesting cases are all specific to it:
+//
+//  · Merchant Center rules rewrite the title, so what Google Ads reports is the feed
+//    title WRAPPED in boilerplate ("Xero Shoes - Barefoot Shoes - … - Zero Drop
+//    Shoes"). Nothing matches exactly.
+//  · One row per SIZE, and an out-of-stock size drops out, so the reported item id
+//    can be absent entirely.
+//  · Product 8568611930290 spans THREE colourways. Matching on the parent id alone
+//    would put a grey shoe under a coral shoe's name — this is the trap, and it is
+//    real data, not a hypothetical.
+//  · Feed ids are `shopify_US_…` (upper) while Ads reports `shopify_us_…` (lower).
 sheets['Product Images'] = mockSheet('Product Images', [
   ['item_id', 'title', 'image_url', 'source'],
   ['XS-PRIO-NEO-M', '', 'https://example.com/prio-neo.jpg', 'feed'],
   ['', 'Z-Trail EV Womens Sandal', 'https://example.com/ztrail.jpg', 'manual'],
   ['XS-HFS-II-M', 'HFS II Mens Running Shoe', '', 'feed'],
-  ['shopify_us_111_9001',
-   'Xero Shoes - Barefoot Shoes - HFS Original - Women - Light Gray/Pink Sand - Zero Drop Shoes',
-   'https://example.com/hfs-original-gray.jpg', 'feed'],
+
+  // --- real feed shape ---
+  ['shopify_US_8568603115698_101', 'HFS Original - Women - Light Gray / Pink Sand',
+   'https://cdn.example.com/HFW-LGPS.jpg', 'feed'],
+  // Same product, a second size: same title, same photo. Must not confuse anything.
+  ['shopify_US_8568603115698_102', 'HFS Original - Women - Light Gray / Pink Sand',
+   'https://cdn.example.com/HFW-LGPS.jpg', 'feed'],
+
+  // Three colourways under ONE parent id.
+  ['shopify_US_8568611930290_201', '360 - Women (Clearance) - Asphalt / Gray',
+   'https://cdn.example.com/TSW-APGY.jpg', 'feed'],
+  ['shopify_US_8568611930290_202', '360 - Women (Clearance) - Sunset Coral / Black / Gum',
+   'https://cdn.example.com/TSW-CBGM.jpg', 'feed'],
+  ['shopify_US_8568611930290_203', '360 - Women (Clearance) - Faded Black',
+   'https://cdn.example.com/TSW-FDBK.jpg', 'feed'],
+
+  // Single colourway under its parent — strategy 4's case.
+  ['shopify_US_8568603246770_301', 'HFS Original - Men - Xero Multi',
+   'https://cdn.example.com/HFM-XOMU.jpg', 'feed'],
+
+  // A colourway whose title CONTAINS another colourway's title as a prefix. Xero names
+  // variants this way ("Black" and "Black / Gum"), so both are contained in the longer
+  // one's reported title and only longest-match distinguishes them.
+  ['shopify_US_8568611930290_204', '360 - Women (Clearance) - Faded Black / Gum',
+   'https://cdn.example.com/TSW-FDGM.jpg', 'feed'],
+
+  // A junk row with a title so short it is a substring of half the catalogue. Feeds
+  // do contain rows like this. Without a length floor on the global fallback it would
+  // resolve every men's shoe to this image.
+  ['XS-JUNK', 'Men', 'https://cdn.example.com/JUNK.jpg', 'feed'],
 ]);
 
 const twStoreSheet = mockSheet('_store', loadStore(ARGS.store));
@@ -544,17 +583,40 @@ const imgChecks = vm.runInContext(`(function () {
     blankUrlRowIgnored: productImageUrl_(map, 'XS-HFS-II-M', 'HFS II Mens Running Shoe'),
     unknown: productImageUrl_(map, 'NOPE', 'Nope'),
 
-    // The real failure: an out-of-stock variant's id is absent from the feed, and the
-    // feed spaces the slash differently. Two sibling variant ids, one shared title —
-    // both must resolve to the one image, which is what the deck's two blank frames
-    // needed.
-    variantIdAbsent: productImageUrl_(map, 'shopify_us_111_9002',
-      'Xero Shoes - Barefoot Shoes - HFS Original - Women - Light Gray / Pink Sand - Zero Drop Shoes'),
-    siblingVariant: productImageUrl_(map, 'shopify_us_111_9003',
-      'Xero Shoes - Barefoot Shoes - HFS Original - Women - Light Gray / Pink Sand - Zero Drop Shoes'),
     // Title beats id when both are present and they disagree — for imagery the title
     // is the correct key, because everything sharing a title looks identical.
     titleWinsOverId: productImageUrl_(map, 'XS-PRIO-NEO-M', 'Z-Trail EV Womens Sandal'),
+  };
+})()`, context);
+
+// The GMC-rewrite cases, asserted through productImageMatch_ so the STRATEGY is
+// checked too. A right answer reached by a speculative route is a latent wrong answer.
+const gmc = vm.runInContext(`(function () {
+  var map = readProductImages_();
+  var ADS = {
+    hfsWomen:  'Xero Shoes - Barefoot Shoes - HFS Original - Women - Light Gray / Pink Sand - Zero Drop Shoes',
+    coral:     'Xero Shoes - Barefoot Shoes - 360 - Women (Clearance) - Sunset Coral / Black / Gum - Zero Drop Shoes',
+    fadedBlk:  'Xero Shoes - Barefoot Shoes - 360 - Women (Clearance) - Faded Black - Zero Drop Shoes',
+    fadedGum:  'Xero Shoes - Barefoot Shoes - 360 - Women (Clearance) - Faded Black / Gum - Zero Drop Shoes',
+    hfsMen:    'Xero Shoes - Barefoot Shoes - HFS Original - Men - Xero Multi - Zero Drop Shoes',
+    unknown:   'Xero Shoes - Barefoot Shoes - Speed Force II - Men - Black - Zero Drop Shoes',
+  };
+  return {
+    // Out-of-stock variant id 999 is absent from the feed; siblings 101/102 are there.
+    rewritten:   productImageMatch_(map, 'shopify_us_8568603115698_999', ADS.hfsWomen),
+    // Three colourways under this parent — must pick the one the title names.
+    coral:       productImageMatch_(map, 'shopify_us_8568611930290_999', ADS.coral),
+    fadedBlack:  productImageMatch_(map, 'shopify_us_8568611930290_998', ADS.fadedBlk),
+    fadedGum:    productImageMatch_(map, 'shopify_us_8568611930290_996', ADS.fadedGum),
+    // Single colourway under the parent: safe even with no title overlap at all.
+    singleColour: productImageMatch_(map, 'shopify_us_8568603246770_999', 'Something Else Entirely'),
+    // Ambiguous: right parent, three colourways, title names none of them.
+    ambiguous:   productImageMatch_(map, 'shopify_us_8568611930290_997',
+                   'Xero Shoes - Barefoot Shoes - 360 - Women (Clearance) - Moonlit Teal - Zero Drop Shoes'),
+    // Nothing in the feed resembles it.
+    absent:      productImageMatch_(map, 'shopify_us_9999999999_999', ADS.unknown),
+    // No parent id in the reported id at all → global containment fallback.
+    noParent:    productImageMatch_(map, '', ADS.hfsWomen),
   };
 })()`, context);
 
@@ -583,19 +645,54 @@ function expectEq(section, name, got, want) {
 if (!ARGS.quiet) console.log('\nPRODUCT IMAGES (slide 11 resolution)');
 {
   const want = {
-    count: 3,
+    count: 10,
     byId: 'https://example.com/prio-neo.jpg',
     byIdCaseInsensitive: 'https://example.com/prio-neo.jpg',
     byTitle: 'https://example.com/ztrail.jpg',
     byTitleWhitespace: 'https://example.com/ztrail.jpg',
     blankUrlRowIgnored: '',
     unknown: '',
-    variantIdAbsent: 'https://example.com/hfs-original-gray.jpg',
-    siblingVariant: 'https://example.com/hfs-original-gray.jpg',
     titleWinsOverId: 'https://example.com/ztrail.jpg',
   };
   Object.keys(want).forEach(k => expectEq('product images', k, imgChecks[k], want[k]));
 }
+
+if (!ARGS.quiet) console.log('\nGMC-REWRITTEN TITLES (slide 11, the real feed shape)');
+[
+  // The two frames that were blank in the deck.
+  ['a rewrapped title resolves', gmc.rewritten.url, 'https://cdn.example.com/HFW-LGPS.jpg'],
+  ['…via parent + title, not by luck', gmc.rewritten.how, 'parent product + title match'],
+
+  // The trap. Parent id alone would answer all three of these identically.
+  ['the coral colourway gets the coral photo', gmc.coral.url, 'https://cdn.example.com/TSW-CBGM.jpg'],
+  ['the faded-black colourway gets its own', gmc.fadedBlack.url, 'https://cdn.example.com/TSW-FDBK.jpg'],
+  ['…and they are different images', gmc.coral.url !== gmc.fadedBlack.url, true],
+
+  ['one colourway under a parent needs no title match',
+    gmc.singleColour.url, 'https://cdn.example.com/HFM-XOMU.jpg'],
+  ['…and says so', gmc.singleColour.how, 'parent product (single colourway)'],
+
+  // Refusing to answer is the correct answer here.
+  ['an unmatched colourway resolves to NO image', gmc.ambiguous.url, ''],
+  ['…and explains why', /^ambiguous — \d+ colourways under this product/.test(gmc.ambiguous.how), true],
+
+  ['a product absent from the feed stays absent', gmc.absent.url, ''],
+  ['…and is not force-matched to something near', gmc.absent.how, 'no match'],
+
+  ['containment still works with no parent id', gmc.noParent.url, 'https://cdn.example.com/HFW-LGPS.jpg'],
+  ['…labelled as the fallback it is', gmc.noParent.how, 'title contained (no parent match)'],
+
+  // "Faded Black" is a prefix of "Faded Black / Gum", so both feed titles are
+  // contained in the longer reported title. Longest-match is the only thing that
+  // tells them apart, and getting it backwards swaps two real photographs.
+  ['"Faded Black / Gum" takes the /Gum photo', gmc.fadedGum.url, 'https://cdn.example.com/TSW-FDGM.jpg'],
+  ['plain "Faded Black" still takes its own', gmc.fadedBlack.url, 'https://cdn.example.com/TSW-FDBK.jpg'],
+
+  // "Men" normalises to 3 characters and is a substring of most titles here. The
+  // length floor on the global fallback is the only thing stopping it.
+  ['a junk short title never wins the fallback',
+    gmc.absent.url !== 'https://cdn.example.com/JUNK.jpg', true],
+].forEach(([name, got, want]) => expectEq('gmc titles', name, got, want));
 
 // ---- slide 10's manual paste, and slide 8's dimension resolution ----
 // The fixture rows are dated 1999-01 so they do not mask the engine path during the
