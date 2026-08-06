@@ -209,8 +209,79 @@ var PRODUCT_ROWS   = 16;   // slide 8  — top product sub-categories
 // LABEL is what the deck's column header should read; the Slides writer rewrites
 // slide 8's first two header cells to match, so the deck can never disagree with
 // the data underneath it.
-var PRODUCT_DIM_1 = { field: 'product_custom_attribute1', label: 'Custom Label 1' };
-var PRODUCT_DIM_2 = { field: 'product_custom_attribute4', label: 'Custom Label 4' };
+// Which two dimensions is a per-feed question, not a Google one — custom labels
+// are free text the Shopping feed sets, so whether label 1 holds a category or the
+// single word "shoes" depends on the feed. Set these on the SETTINGS TAB, not
+// here: the Google Ads Script reads the same tab, so one cell changes both sides.
+// `Diagnostics → Show product dimensions` prints what each one actually contains.
+var PRODUCT_DIM_1 = { field: 'product_type_l1',  label: 'Product Type 1' };
+var PRODUCT_DIM_2 = { field: 'product_type_l2',  label: 'Product Type 2' };
+
+/**
+ * Every product dimension `shopping_performance_view` can segment by, and the
+ * deck column header each should read. Also the validator for the Settings tab.
+ *
+ * Custom labels are ZERO-indexed in the API and the UI agrees — the UI's "Custom
+ * label 1" is segments.product_custom_attribute1 — so the numbers line up.
+ */
+var PRODUCT_DIM_VOCAB = [
+  ['product_custom_attribute0', 'Custom Label 0'],
+  ['product_custom_attribute1', 'Custom Label 1'],
+  ['product_custom_attribute2', 'Custom Label 2'],
+  ['product_custom_attribute3', 'Custom Label 3'],
+  ['product_custom_attribute4', 'Custom Label 4'],
+  ['product_type_l1', 'Product Type 1'],
+  ['product_type_l2', 'Product Type 2'],
+  ['product_type_l3', 'Product Type 3'],
+  ['product_type_l4', 'Product Type 4'],
+  ['product_type_l5', 'Product Type 5'],
+  ['product_brand', 'Brand'],
+  ['product_condition', 'Condition'],
+  ['product_channel', 'Channel'],
+  ['product_item_id', 'Item ID'],
+  ['product_title', 'Product Title'],
+];
+
+/**
+ * Accept a dimension written any of the ways someone would reasonably write it —
+ * the API field, the UI's label, or shorthand — and return { field, label }, or
+ * null if it is not a real dimension.
+ *
+ * Tolerant on input because this is typed into a spreadsheet cell by hand, and a
+ * rejected value silently falls back to the default, which is worse than
+ * accepting "custom label 4".
+ */
+function resolveProductDim_(input) {
+  var s = String(input === null || input === undefined ? '' : input)
+    .trim().toLowerCase().replace(/[\s_\-.]/g, '');
+  if (!s) return null;
+
+  for (var i = 0; i < PRODUCT_DIM_VOCAB.length; i++) {
+    var field = PRODUCT_DIM_VOCAB[i][0], label = PRODUCT_DIM_VOCAB[i][1];
+    if (s === field.replace(/_/g, '')) return { field: field, label: label };
+    if (s === label.toLowerCase().replace(/\s/g, '')) return { field: field, label: label };
+  }
+
+  // Shorthand: cl3 / label3 / customlabel3 → attribute3;  pt2 / type2 / l2 → l2.
+  var m = s.match(/^(?:cl|customlabel|label|attr|attribute|customattribute)(\d)$/);
+  if (m && Number(m[1]) <= 4) return dimByField_('product_custom_attribute' + m[1]);
+  m = s.match(/^(?:pt|producttype|type|l)(\d)$/);
+  if (m && Number(m[1]) >= 1 && Number(m[1]) <= 5) return dimByField_('product_type_l' + m[1]);
+
+  return null;
+}
+
+function dimByField_(field) {
+  for (var i = 0; i < PRODUCT_DIM_VOCAB.length; i++) {
+    if (PRODUCT_DIM_VOCAB[i][0] === field) {
+      return { field: field, label: PRODUCT_DIM_VOCAB[i][1] };
+    }
+  }
+  // An unknown field is still readable — the engine tab is the authority on what
+  // it holds, so label it with the raw field rather than dropping it.
+  return { field: field, label: field };
+}
+
 var PMAX_CAT_ROWS  = 16;   // slide 10 — top PMax search categories
 var TOP_ITEM_ROWS  = 5;    // slide 11 — product cards
 var PROMO_ROWS     = 3;    // slide 12 — promo sitelinks (a Grand Total row is added)
@@ -221,6 +292,11 @@ var REPORT_SHEET   = 'Report';           // slide-shaped output blocks
 var MAP_SHEET      = 'Campaign Map';     // classification review + overrides
 var AUCTION_SHEET  = 'Auction Insights'; // manual paste (no API — see docs/GAPS.md)
 var PROMO_SHEET    = 'Promos';           // manual promo windows
+// Manual paste for slide 10, from the Google Ads UI's "Search terms insights"
+// panel Download button. Read with PRIORITY over the API tab: if you pasted it,
+// you looked at it, so it beats whatever a query shape guessed at.
+var PMAXCAT_MANUAL_SHEET = 'PMax Categories';
+var PRODUCT_DIMS_SHEET   = '_eng_product_dims';  // dimension discovery (read-only here)
 var STATUS_SHEET   = '_status';          // live run log
 
 // ============================== PRESENTATION ===============================
@@ -298,6 +374,12 @@ function settingsSpec_() {
     ['PRODUCT_FEED_URL', 'Shopping feed URL (product images)', null,
      'Your Merchant Center / Shopping feed — Google Shopping XML (<g:id>, <g:image_link>) or a TSV/CSV with id and image_link columns. Fills slide 11\'s product photos via Setup → Refresh product images. Must be publicly reachable. The Google Ads API exposes no product image URL, so this is the only automated source.'],
 
+    ['PRODUCT_DIM_1', 'Slide 8 — first product dimension', function (v) { return !!resolveProductDim_(v); },
+     'The left-hand column of slide 8. Custom Label 0-4, Product Type 1-5, Brand, Condition, Channel, Item ID or Product Title. THE GOOGLE ADS SCRIPT READS THIS SAME CELL, so changing it needs no code edit — change it, re-run the MCC script, rebuild. Run Diagnostics → Show product dimensions first to see what each one actually contains in your feed.'],
+
+    ['PRODUCT_DIM_2', 'Slide 8 — second product dimension', function (v) { return !!resolveProductDim_(v); },
+     'The second column of slide 8, broken out within the first. Same vocabulary as PRODUCT_DIM_1.'],
+
     ['CVR_BASIS', 'TW CVR basis', function (v) { return ['clicks', 'sessions'].indexOf(v.toLowerCase()) !== -1; },
      'clicks or sessions. sessions needs TW_SESSION_FIELD set and that column present in the Triple Whale store — see docs/GAPS.md §3.'],
 
@@ -344,6 +426,10 @@ function applySettings_() {
       case 'CVR_BASIS':             CVR_BASIS = value; break;
       case 'TW_SESSION_FIELD':      TW_SESSION_FIELD = value; break;
       case 'PRODUCT_FEED_URL':      PRODUCT_FEED_URL = value; break;
+      // Stored as a free-text dimension name; normalised to { field, label } so
+      // the deck header can never disagree with the field that was queried.
+      case 'PRODUCT_DIM_1':         PRODUCT_DIM_1 = resolveProductDim_(value); break;
+      case 'PRODUCT_DIM_2':         PRODUCT_DIM_2 = resolveProductDim_(value); break;
       default: continue;
     }
     applied.push(key);
@@ -434,6 +520,8 @@ function defaultFor_(key) {
     case 'CVR_BASIS':             return CVR_BASIS;
     case 'TW_SESSION_FIELD':      return TW_SESSION_FIELD;
     case 'PRODUCT_FEED_URL':      return PRODUCT_FEED_URL;
+    case 'PRODUCT_DIM_1':         return PRODUCT_DIM_1 ? PRODUCT_DIM_1.field : '';
+    case 'PRODUCT_DIM_2':         return PRODUCT_DIM_2 ? PRODUCT_DIM_2.field : '';
     default: return '';
   }
 }
@@ -457,7 +545,9 @@ function openSettings() {
     '  Report month        ' + (REPORT_MONTH || '(last complete month)') + '\n' +
     '  Triple Whale sheet  ' + (TW_SPREADSHEET_ID ? TW_SPREADSHEET_ID : 'NOT SET') + '\n' +
     '  Deck template       ' + (DECK_TEMPLATE_ID ? DECK_TEMPLATE_ID : 'NOT SET — no deck will be generated') + '\n' +
-    '  CVR basis           ' + CVR_BASIS);
+    '  CVR basis           ' + CVR_BASIS + '\n' +
+    '  Slide 8 dimensions  ' + PRODUCT_DIM_1.label + ' × ' + PRODUCT_DIM_2.label +
+      '  (' + PRODUCT_DIM_1.field + ' / ' + PRODUCT_DIM_2.field + ')');
 }
 
 /**
@@ -2354,10 +2444,17 @@ function renderProductBlock_(w, ctx) {
   var month = ctx.periods.current.month;
   var raw = readEngineTab_(ENGINE_PRODUCT_SHEET).filter(function (r) { return monthOf_(r.month) === month; });
 
-  // The engine feed writes the two dimensions under fixed column names `dim1` and
-  // `dim2`, so changing PRODUCT_DIM_* needs no change here. Older tabs written
-  // before that used product_type_l1/l2 — read those as a fallback so an existing
-  // sheet keeps working until the Ads script next runs.
+  // The TAB is the authority on which dimensions its numbers describe — it records
+  // them in dim1_field / dim2_field. Reading the labels from the Settings tab
+  // instead would head the columns with whatever was configured LAST, which after
+  // a settings change but before the next MCC run is a slide that mislabels real
+  // data. That is the one failure mode worth engineering against here, because it
+  // is invisible: the numbers look fine under the wrong heading.
+  var dims = productDimsOf_(raw);
+
+  // Fixed column names `dim1`/`dim2` whatever the dimensions are. Older tabs,
+  // written before that, used product_type_l1/l2 — read those as a fallback so an
+  // existing sheet keeps working until the Ads script next runs.
   var groups = groupEngine_(raw, function (r) {
     var d1 = r.dim1 !== undefined ? r.dim1 : r.product_type_l1;
     var d2 = r.dim2 !== undefined ? r.dim2 : r.product_type_l2;
@@ -2378,16 +2475,52 @@ function renderProductBlock_(w, ctx) {
   w.block({
     name: 'RPT_PRODUCT', slide: '8', title: 'Product Category Performance',
     note: raw.length
-      ? 'Google Ads engine data, shopping_performance_view segmented by ' + PRODUCT_DIM_1.label +
-        ' × ' + PRODUCT_DIM_2.label + ' (' + PRODUCT_DIM_1.field + ' / ' + PRODUCT_DIM_2.field +
-        '). Sorted by conversion value, top ' + PRODUCT_ROWS + ' rows.'
+      ? 'Google Ads engine data, shopping_performance_view segmented by ' + dims[0].label +
+        ' × ' + dims[1].label + ' (' + dims[0].field + ' / ' + dims[1].field +
+        '). Sorted by conversion value, top ' + PRODUCT_ROWS + ' rows.' + dims.mismatchNote +
+        '  Custom labels are free text your Shopping feed sets, so which ones carry a category is a ' +
+        'property of the feed: run Diagnostics → Show product dimensions to see what each contains, ' +
+        'then set PRODUCT_DIM_1 / PRODUCT_DIM_2 on the Settings tab and re-run the MCC script.'
       : emptyNote_(ENGINE_PRODUCT_SHEET),
-    header: [PRODUCT_DIM_1.label, PRODUCT_DIM_2.label, 'Impr.', 'Clicks', 'Cost',
+    header: [dims[0].label, dims[1].label, 'Impr.', 'Clicks', 'Cost',
              'Avg. CPC', 'Conversions', 'Conv. Value', 'ROAS'],
     rows: padRows_(rows, PRODUCT_ROWS, 9),
     colFormats: [null, null, '#,##0', '#,##0', currencyFormat_(false),
                  currencyFormat_(true), '#,##0', currencyFormat_(false), '#,##0.00'],
   });
+}
+
+/**
+ * The two dimensions the `_eng_product` rows actually describe, as
+ * [ {field,label}, {field,label} ] with a `mismatchNote` string.
+ *
+ * Prefers what the tab recorded over what is configured now, and says so when they
+ * disagree — a settings change only reaches the data on the next MCC run, and in
+ * between, the honest thing is to label the columns for the data that is there.
+ */
+function productDimsOf_(rows) {
+  var configured = [PRODUCT_DIM_1, PRODUCT_DIM_2];
+  var out = configured.slice();
+  out.mismatchNote = '';
+  if (!rows.length) return out;
+
+  var stamped = [String(rows[0].dim1_field || '').trim(), String(rows[0].dim2_field || '').trim()];
+  var drift = [];
+
+  for (var i = 0; i < 2; i++) {
+    if (!stamped[i]) continue;                       // pre-stamp tab: trust config
+    out[i] = dimByField_(stamped[i]);
+    if (stamped[i] !== configured[i].field) {
+      drift.push('PRODUCT_DIM_' + (i + 1) + ' is set to ' + configured[i].field);
+    }
+  }
+
+  if (drift.length) {
+    out.mismatchNote = '  ⚠  These columns are headed for what the tab HOLDS (' +
+      out[0].field + ' / ' + out[1].field + '), but ' + drift.join(' and ') +
+      ' on the Settings tab. Re-run the MCC Google Ads Script to pull the dimensions you asked for.';
+  }
+  return out;
 }
 
 // ============================== SLIDE 9: IMPRESSION SHARE ==================
@@ -2506,7 +2639,16 @@ function toRatio_(v) {
 
 function renderPmaxCategoryBlock_(w, ctx) {
   var month = ctx.periods.current.month;
-  var raw = readEngineTab_(ENGINE_PMAXCAT_SHEET).filter(function (r) { return monthOf_(r.month) === month; });
+
+  // MANUAL FIRST. The search-term-insight resources carry undocumented constraints
+  // that shift between API versions, so the automated query can come back empty
+  // through no fault of the configuration — and the UI panel that has the data has
+  // a Download button. Anything pasted therefore wins: you looked at it.
+  var manual = readPmaxManual_(month);
+  var raw = manual.rows.length
+    ? manual.rows
+    : readEngineTab_(ENGINE_PMAXCAT_SHEET).filter(function (r) { return monthOf_(r.month) === month; });
+  var source = manual.rows.length ? 'manual' : (raw.length ? 'api' : 'none');
 
   var groups = groupEngine_(raw, function (r) {
     var c = String(r.category || '').trim();
@@ -2515,7 +2657,7 @@ function renderPmaxCategoryBlock_(w, ctx) {
 
   var rows = groups.map(function (g) {
     // Search volume is a bucketed RANGE in the UI ("10K-100K"), so it passes
-    // through as text when the API returns it and as n/a when it does not.
+    // through as text when the source supplies it and as n/a when it does not.
     var vol = String((g.row && g.row.search_volume) || '').trim();
     return [
       g.key,
@@ -2526,21 +2668,127 @@ function renderPmaxCategoryBlock_(w, ctx) {
     ];
   });
 
+  var note;
+  if (source === 'manual') {
+    note = 'Pasted by hand into the "' + PMAXCAT_MANUAL_SHEET + '" tab for ' + month +
+      ' — ' + manual.rows.length + ' row(s). A paste takes priority over the API tab, so this is ' +
+      'what the slide shows even if the automated feed also returned data.' +
+      (manual.unmapped.length
+        ? '  ⚠  Unrecognised column(s) ignored: ' + manual.unmapped.join(', ') + '.'
+        : '');
+  } else if (source === 'api') {
+    note = 'Google Ads search-term-category insights, aggregated across Performance Max campaigns ' +
+      'and sorted by conversions.';
+  } else {
+    note = 'EMPTY. Two ways to fill it:  (1) MANUAL — Google Ads → Campaigns → Insights → ' +
+      '"Search terms insights" → Download, then paste into the "' + PMAXCAT_MANUAL_SHEET + '" tab ' +
+      'with Month as ' + month + '. This always works and is the fastest route.  (2) AUTOMATED — ' +
+      'the MCC script tries several query shapes against customer_search_term_insight and ' +
+      'campaign_search_term_insight; if the tab is still empty, the "_eng_status" tab carries the ' +
+      'exact error Google returned for each shape tried, which is what tells a missing permission ' +
+      'apart from a renamed field.';
+  }
+
   w.block({
     name: 'RPT_PMAX_CAT', slide: '10', title: 'Top PMax Search Categories',
-    note: (raw.length
-      ? 'Google Ads campaign_search_term_insight, aggregated across Performance Max campaigns and ' +
-        'sorted by conversions. '
-      : emptyNote_(ENGINE_PMAXCAT_SHEET) + ' ') +
-      'Search Volume is a bucketed range in the Google Ads UI ("10K-100K"). The feed asks for it and ' +
-      'passes it through when the API returns it; where it reads n/a the API did not supply it, and ' +
-      'Impr. on the same row is the usable substitute. If this whole block is empty, the ' +
-      '_eng_status tab carries the exact error Google returned for each query shape tried.',
+    note: note + '  Search Volume is a bucketed range in the Google Ads UI ("10K-100K"); where it ' +
+      'reads n/a the source did not supply it, and Impr. on the same row is the usable substitute.',
     header: ['Search Category', 'Search Volume', 'Conversions', 'Clicks', 'Impr.',
              'Conv. Value', 'CTR', 'Conv. Rate'],
     rows: padRows_(rows, PMAX_CAT_ROWS, 8),
     colFormats: [null, '#,##0', '#,##0', '#,##0', '#,##0', currencyFormat_(false), '0.00%', '0.00%'],
   });
+}
+
+/**
+ * Read the hand-pasted PMax search categories for one month, normalised into the
+ * same row shape the engine tab uses so the renderer cannot tell them apart.
+ *
+ * Column names are matched LOOSELY. A Google Ads export is pasted as-is and its
+ * headers vary by view, locale and Google's own redesigns ("Search category" /
+ * "Search categories" / "Category"), so insisting on exact spellings would turn a
+ * working paste into a silently empty slide. Anything unrecognised is reported
+ * rather than dropped quietly.
+ *
+ * A row with no Month is treated as belonging to the report month: the export does
+ * not carry one, and requiring the column is the mistake most likely to make a
+ * correct paste look like no paste at all.
+ */
+function readPmaxManual_(month) {
+  var raw = readEngineTab_(PMAXCAT_MANUAL_SHEET);
+  if (!raw.length) return { rows: [], unmapped: [] };
+
+  var ALIASES = {
+    month:             ['month', 'reporting month', 'period'],
+    category:          ['search category', 'search categories', 'category', 'search term category',
+                        'categories', 'search category label', 'category label'],
+    search_volume:     ['search volume', 'searches', 'volume', 'monthly searches',
+                        'search volume index'],
+    impressions:       ['impressions', 'impr.', 'impr', 'impressions.'],
+    clicks:            ['clicks'],
+    cost:              ['cost', 'spend', 'cost (usd)', 'amount spent'],
+    conversions:       ['conversions', 'conv.', 'conv', 'all conv.', 'all conversions', 'orders'],
+    conversions_value: ['conv. value', 'conversion value', 'conv value', 'all conv. value',
+                        'value', 'revenue', 'conv. value (usd)'],
+  };
+
+  var present = {}, unmapped = [];
+  Object.keys(raw[0]).forEach(function (h) {
+    var norm = h.replace(/\s+/g, ' ').trim();
+    var hit = null;
+    Object.keys(ALIASES).forEach(function (canon) {
+      if (hit) return;
+      if (ALIASES[canon].indexOf(norm) !== -1) hit = canon;
+    });
+    if (hit) { if (!present[hit]) present[hit] = h; }
+    else if (norm) unmapped.push(h);
+  });
+
+  if (!present.category) {
+    // No category column means this is not a search-categories paste. Report it
+    // through the note rather than showing an empty slide with no explanation.
+    return { rows: [], unmapped: ['no recognisable "Search category" column — found: ' +
+      Object.keys(raw[0]).join(', ')] };
+  }
+
+  var rows = [];
+  for (var i = 0; i < raw.length; i++) {
+    var r = raw[i];
+    var cat = String(r[present.category] || '').trim();
+    if (!cat) continue;
+    // Placeholder text from the example row the tab is seeded with.
+    if (cat.indexOf('Paste your') === 0) continue;
+
+    var m = present.month ? monthOf_(r[present.month]) : '';
+    if (m && m !== month) continue;
+
+    rows.push({
+      month: month,
+      category: cat,
+      search_volume: present.search_volume ? r[present.search_volume] : '',
+      impressions:       present.impressions       ? numLoose_(r[present.impressions])       : 0,
+      clicks:            present.clicks            ? numLoose_(r[present.clicks])            : 0,
+      cost:              present.cost              ? numLoose_(r[present.cost])              : 0,
+      conversions:       present.conversions       ? numLoose_(r[present.conversions])       : 0,
+      conversions_value: present.conversions_value ? numLoose_(r[present.conversions_value]) : 0,
+    });
+  }
+  return { rows: rows, unmapped: unmapped };
+}
+
+/**
+ * A number out of a pasted export: '1,234', '$1,234.56', '12.3%', ' 45 '.
+ * A Google Ads download carries thousands separators and currency symbols, which
+ * Number() turns into NaN — and NaN summed into a total is a silently wrong slide.
+ */
+function numLoose_(v) {
+  if (typeof v === 'number') return isFinite(v) ? v : 0;
+  var s = String(v === null || v === undefined ? '' : v).trim();
+  if (!s || s === '--' || s === '—') return 0;
+  var pct = s.indexOf('%') !== -1;
+  var n = Number(s.replace(/[^0-9.\-]/g, ''));
+  if (!isFinite(n)) return 0;
+  return pct ? n / 100 : n;
 }
 
 // ============================== SLIDE 11: TOP PRODUCTS =====================
@@ -2698,6 +2946,24 @@ function ensureInputTabs_() {
     a.getRange(2, 1, 1, 2).setValues([['', 'Paste your auction insights export here →']])
       .setFontColor('#9ca3af').setFontStyle('italic');
     for (var c = 1; c <= ah.length; c++) a.autoResizeColumn(c);
+  }
+
+  if (!ss.getSheetByName(PMAXCAT_MANUAL_SHEET)) {
+    var m = ss.insertSheet(PMAXCAT_MANUAL_SHEET);
+    var mh = ['Month', 'Search Category', 'Search Volume', 'Impressions', 'Clicks',
+              'Cost', 'Conversions', 'Conv. Value'];
+    m.getRange(1, 1, 1, mh.length).setValues([mh])
+      .setFontWeight('bold').setBackground(HEAD_BG).setFontColor(HEAD_FG);
+    m.setFrozenRows(1);
+    m.getRange(1, 1).setNote('Slide 10. Google Ads → Campaigns → Insights → "Search terms ' +
+      'insights" → Download, then paste here. Month as yyyy-MM; leave Month empty and the rows ' +
+      'count as the report month.\n\nColumn names are matched loosely, so you can paste the export ' +
+      'with its own headers — only a "Search category" column is required. Anything here takes ' +
+      'PRIORITY over the automated "' + ENGINE_PMAXCAT_SHEET + '" tab.');
+    m.getRange(2, 1, 1, 3).setValues([['', 'Paste your search terms insights export here →', '']])
+      .setFontColor('#9ca3af').setFontStyle('italic');
+    m.getRange(2, 1, 200, 1).setNumberFormat('@');
+    for (var c3 = 1; c3 <= mh.length; c3++) m.autoResizeColumn(c3);
   }
 
   if (!ss.getSheetByName(PROMO_SHEET)) {
@@ -3659,24 +3925,34 @@ function insertProductImage_(slide, frame, url, skipped, label) {
 }
 
 /**
- * Rewrite slide 8's first two header cells from PRODUCT_DIM_*.label.
+ * Rewrite slide 8's first two header cells to match the data underneath them.
  *
  * The table writer only fills DATA rows, so without this the deck would keep
  * saying "Product Type (1st)" over columns that now hold Custom Label 1 — a
  * mislabelled column being far worse than an empty one, because nothing looks
  * wrong.
+ *
+ * The labels come from RPT_PRODUCT's own header row rather than from
+ * PRODUCT_DIM_*.label, so they follow renderProductBlock_'s decision about which
+ * dimensions the rows actually describe. Two places computing the heading is how
+ * they end up disagreeing.
  */
 function fillProductHeaders_(slides, skipped) {
   if (slides.length < 8) return;
   var tables = slides[7].getTables();
   if (!tables.length) { skipped.push('slide 8: no table found to relabel'); return; }
 
+  var block = namedDisplayValues_('RPT_PRODUCT');
+  var labels = (block && block.length && block[0].length >= 2)
+    ? [block[0][0], block[0][1]]
+    : [PRODUCT_DIM_1.label, PRODUCT_DIM_2.label];
+
   var table = tables[0];
   if (table.getNumColumns() < 2) return;
   try {
-    table.getCell(0, 0).getText().setText(PRODUCT_DIM_1.label);
-    table.getCell(0, 1).getText().setText(PRODUCT_DIM_2.label);
-    progress_('Slide 8: headers set to ' + PRODUCT_DIM_1.label + ' / ' + PRODUCT_DIM_2.label + '.');
+    table.getCell(0, 0).getText().setText(labels[0]);
+    table.getCell(0, 1).getText().setText(labels[1]);
+    progress_('Slide 8: headers set to ' + labels[0] + ' / ' + labels[1] + '.');
   } catch (e) {
     skipped.push('slide 8: could not relabel the first two headers — ' + e.message);
   }
@@ -4006,7 +4282,7 @@ function diagCheckSources() {
   lines.push('');
   lines.push('GOOGLE ADS ENGINE TABS');
   var tabs = [ENGINE_DAY_SHEET, ENGINE_PRODUCT_SHEET, ENGINE_PMAXCAT_SHEET,
-              ENGINE_ITEM_SHEET, ENGINE_ASSET_SHEET];
+              ENGINE_ITEM_SHEET, ENGINE_ASSET_SHEET, PRODUCT_DIMS_SHEET];
   for (var t = 0; t < tabs.length; t++) {
     var rows = readEngineTab_(tabs[t]);
     lines.push('  ' + tabs[t] + ': ' + (rows.length ? rows.length + ' rows' : 'empty / absent'));
@@ -4015,9 +4291,108 @@ function diagCheckSources() {
   lines.push('');
   lines.push('MANUAL INPUT TABS');
   lines.push('  ' + AUCTION_SHEET + ': ' + readEngineTab_(AUCTION_SHEET).length + ' rows');
+  lines.push('  ' + PMAXCAT_MANUAL_SHEET + ': ' + readEngineTab_(PMAXCAT_MANUAL_SHEET).length + ' rows');
   lines.push('  ' + PROMO_SHEET + ': ' + readEngineTab_(PROMO_SHEET).length + ' rows');
 
   tell_('Data sources', lines.join('\n'));
+}
+
+/**
+ * What each product dimension actually CONTAINS — the answer to "which two should
+ * slide 8 use?".
+ *
+ * Custom labels are free text the Shopping feed sets, so no amount of reading
+ * Google's docs reveals whether label 1 holds a category or the single word
+ * "shoes". Guessing costs a full round trip (edit config → re-run the MCC script →
+ * rebuild → look at the deck) and the answer is only visible at the end of it.
+ * This turns that into reading one screen.
+ *
+ * Ranks by how useful each dimension looks — several distinct values, little
+ * "(not set)" — and recommends the top two, but shows the values so you can
+ * overrule it on judgement rather than on the score.
+ */
+function diagProductDims() {
+  applySettings_();
+  var raw = readEngineTab_(PRODUCT_DIMS_SHEET);
+
+  if (!raw.length) {
+    tell_('No dimension data yet',
+      'The "' + PRODUCT_DIMS_SHEET + '" tab is empty or absent.\n\n' +
+      'It is written by the MCC Google Ads Script (google-ads-script/engine-report.js). If you ' +
+      'installed that script before this feature existed, re-paste it and Run — it probes every ' +
+      'product dimension and writes what each one contains.\n\n' +
+      'Currently configured for slide 8:\n  ' +
+      PRODUCT_DIM_1.field + '  (' + PRODUCT_DIM_1.label + ')\n  ' +
+      PRODUCT_DIM_2.field + '  (' + PRODUCT_DIM_2.label + ')');
+    return;
+  }
+
+  // dimension → { values: [{value, cost, conv_value}], cost, notSetCost }
+  var dims = {}, order = [];
+  for (var i = 0; i < raw.length; i++) {
+    var r = raw[i];
+    var d = String(r.dimension || '').trim();
+    if (!d) continue;
+    if (!dims[d]) { dims[d] = { name: d, values: [], cost: 0, notSetCost: 0 }; order.push(d); }
+    var value = String(r.value === undefined || r.value === null ? '' : r.value).trim() || '(not set)';
+    var cost = num_(r.cost), cv = num_(r.conversions_value);
+    dims[d].values.push({ value: value, cost: cost, cv: cv });
+    dims[d].cost += cost;
+    if (value === '(not set)') dims[d].notSetCost += cost;
+  }
+
+  var scored = order.map(function (d) {
+    var x = dims[d];
+    var real = x.values.filter(function (v) { return v.value !== '(not set)'; });
+    // A dimension is useful when it SPLITS spend. One value splits nothing; a
+    // hundred values (item id, title) splits it past the point a 16-row slide can
+    // show. Mostly "(not set)" means the feed never populated it.
+    var distinct = real.length;
+    var coverage = x.cost > 0 ? (x.cost - x.notSetCost) / x.cost : 0;
+    var spread = distinct <= 1 ? 0 : (distinct <= 40 ? 1 : 0.4);
+    x.distinct = distinct;
+    x.coverage = coverage;
+    x.score = spread * coverage * (distinct <= 1 ? 0 : 1);
+    x.top = real.sort(function (a, b) { return b.cost - a.cost; }).slice(0, 6);
+    return x;
+  }).sort(function (a, b) { return b.score - a.score || b.distinct - a.distinct; });
+
+  var money = function (n) { return '$' + Math.round(n).toLocaleString('en-US'); };
+  var lines = [];
+  lines.push('Currently on slide 8:  ' + PRODUCT_DIM_1.field + '  ×  ' + PRODUCT_DIM_2.field);
+  lines.push('');
+
+  var usable = scored.filter(function (x) { return x.score > 0; });
+  if (usable.length >= 2) {
+    lines.push('SUGGESTED:  PRODUCT_DIM_1 = ' + usable[0].name +
+      '     PRODUCT_DIM_2 = ' + usable[1].name);
+  } else if (usable.length === 1) {
+    lines.push('SUGGESTED:  PRODUCT_DIM_1 = ' + usable[0].name +
+      '   — only one dimension in this feed splits spend usefully. Pair it with anything below.');
+  } else {
+    lines.push('⚠  No dimension in this feed splits spend usefully — every one is either a single ' +
+      'value or unpopulated. Slide 8 may need product_type_l1 from a feed change, or to become an ' +
+      'item-level table.');
+  }
+  lines.push('');
+  lines.push('Set them on the Settings tab, then RE-RUN THE MCC SCRIPT and rebuild. The Google Ads ' +
+    'script reads those same cells, so there is no code to edit.');
+  lines.push('');
+
+  for (var s = 0; s < scored.length; s++) {
+    var x = scored[s];
+    lines.push(x.name + '   ' + x.distinct + ' value(s), ' +
+      Math.round(x.coverage * 100) + '% of spend populated' +
+      (x.score > 0 ? '' : '   ← not usable'));
+    if (!x.top.length) { lines.push('     (nothing populated)'); continue; }
+    for (var v = 0; v < x.top.length; v++) {
+      lines.push('     ' + x.top[v].value + '  —  ' + money(x.top[v].cost) + ' cost, ' +
+        money(x.top[v].cv) + ' conv. value');
+    }
+    if (x.distinct > x.top.length) lines.push('     … and ' + (x.distinct - x.top.length) + ' more');
+  }
+
+  tell_('Product dimensions in your feed', lines.join('\n'));
 }
 
 function diagCoverage() {
@@ -4395,6 +4770,89 @@ function checkDeckContract_(t) {
   }
   var unplanned = Object.keys(truth).filter(function (k) { return !planned[k]; });
   t.ok('every deck table is mapped by slidePlan_', unplanned.length === 0, unplanned.join(', '));
+
+  checkProductDims_(t);
+  checkLoosePasteParsing_(t);
+}
+
+/**
+ * Slide 8's two dimensions.
+ *
+ * These are settable from a spreadsheet cell, and a cell that fails to resolve
+ * falls back silently to the Config.gs default — so the failure mode is a slide
+ * headed and segmented by a dimension nobody chose. Pin the resolver instead of
+ * trusting it.
+ */
+function checkProductDims_(t) {
+  t.ok('PRODUCT_DIM_1 is a real product dimension', !!resolveProductDim_(PRODUCT_DIM_1.field),
+    PRODUCT_DIM_1.field + ' is not in PRODUCT_DIM_VOCAB');
+  t.ok('PRODUCT_DIM_2 is a real product dimension', !!resolveProductDim_(PRODUCT_DIM_2.field),
+    PRODUCT_DIM_2.field + ' is not in PRODUCT_DIM_VOCAB');
+
+  // Both columns showing the same dimension is a table that breaks nothing down.
+  t.ok('the two dimensions differ', PRODUCT_DIM_1.field !== PRODUCT_DIM_2.field,
+    'both are ' + PRODUCT_DIM_1.field);
+
+  // Every field in the vocabulary must round-trip, because the Google Ads script
+  // has its own copy of this resolver and either side may be given the other's
+  // output. A field one accepts and the other rejects means the Ads script queries
+  // one dimension while the deck labels another.
+  var bad = [];
+  for (var i = 0; i < PRODUCT_DIM_VOCAB.length; i++) {
+    var field = PRODUCT_DIM_VOCAB[i][0];
+    var got = resolveProductDim_(field);
+    if (!got || got.field !== field) bad.push(field);
+    var byLabel = resolveProductDim_(PRODUCT_DIM_VOCAB[i][1]);
+    if (!byLabel || byLabel.field !== field) bad.push(PRODUCT_DIM_VOCAB[i][1]);
+  }
+  t.ok('every dimension resolves from its field AND its UI label', bad.length === 0, bad.join(', '));
+
+  // The shorthand a person actually types into a cell.
+  t.ok('"Custom label 4" resolves', (resolveProductDim_('Custom label 4') || {}).field ===
+    'product_custom_attribute4');
+  t.ok('"cl4" resolves', (resolveProductDim_('cl4') || {}).field === 'product_custom_attribute4');
+  t.ok('"product_type_l1" resolves', (resolveProductDim_('product_type_l1') || {}).field ===
+    'product_type_l1');
+  t.ok('"l2" resolves', (resolveProductDim_('l2') || {}).field === 'product_type_l2');
+  t.ok('"brand" resolves', (resolveProductDim_('brand') || {}).field === 'product_brand');
+
+  // And must REJECT, so a typo falls back visibly rather than resolving to
+  // something adjacent. cl5 does not exist; label 6 does not exist.
+  t.ok('a non-existent dimension is rejected', resolveProductDim_('cl5') === null);
+  t.ok('nonsense is rejected', resolveProductDim_('shoes') === null);
+  t.ok('empty is rejected', resolveProductDim_('') === null);
+
+  // productDimsOf_ must prefer what the tab recorded, so the columns are always
+  // headed for the data present rather than for the current configuration.
+  var stamped = productDimsOf_([{ dim1_field: 'product_type_l1', dim2_field: 'product_brand' }]);
+  t.ok('the engine tab\'s own dim fields win over the config',
+    stamped[0].field === 'product_type_l1' && stamped[1].field === 'product_brand',
+    stamped[0].field + ' / ' + stamped[1].field);
+  var shouldWarn = PRODUCT_DIM_1.field !== 'product_type_l1' ||
+                   PRODUCT_DIM_2.field !== 'product_brand';
+  t.ok('a config/tab mismatch is reported, not hidden',
+    shouldWarn === (stamped.mismatchNote.length > 0),
+    shouldWarn ? 'expected a warning, got none' : 'warned when config and tab agree');
+  var unstamped = productDimsOf_([{ dim1: 'x', dim2: 'y' }]);
+  t.ok('a pre-stamp engine tab falls back to the configured labels',
+    unstamped[0].field === PRODUCT_DIM_1.field && unstamped.mismatchNote === '');
+}
+
+/**
+ * The pasted-export number parser.
+ *
+ * A Google Ads download carries thousands separators and currency symbols, which
+ * Number() turns into NaN — and one NaN summed into a column is a wrong slide with
+ * nothing visibly broken. Cheap to assert, so assert it.
+ */
+function checkLoosePasteParsing_(t) {
+  t.ok('a thousands separator parses', numLoose_('1,234') === 1234);
+  t.ok('a currency symbol parses', numLoose_('$1,234.56') === 1234.56);
+  t.ok('a percentage becomes a ratio', numLoose_('12.5%') === 0.125);
+  t.ok('Google\'s em-dash blank is zero, not NaN', numLoose_('—') === 0);
+  t.ok('an empty cell is zero', numLoose_('') === 0);
+  t.ok('a real number passes through', numLoose_(42.5) === 42.5);
+  t.ok('a negative parses', numLoose_('-17') === -17);
 }
 
 // ============================== H · SPINE / SOURCE COMBINATION =============
@@ -4889,6 +5347,7 @@ function onOpen() {
       .addItem('Check data sources', 'diagCheckSources')
       .addItem('Show period coverage', 'diagCoverage')
       .addItem('Show classification summary', 'diagClassification')
+      .addItem('Show product dimensions (slide 8)', 'diagProductDims')
       .addItem('List unclassified campaigns', 'diagUnclassified')
       .addItem('Validate the deck template', 'diagValidateDeck')
       .addItem('List Report tab named ranges', 'diagNamedRanges')
@@ -4966,9 +5425,13 @@ function createInputTabs() {
   applySettings_();
   ensureInputTabs_();
   tell_('Input tabs ready',
-    'Created (or confirmed) two hand-fed tabs:\n\n' +
+    'Created (or confirmed) three hand-fed tabs:\n\n' +
     '· "' + AUCTION_SHEET + '" — paste your Auction Insights export here. No Google API exposes ' +
     'this data, so slide 9\'s competitor block cannot be automated.\n\n' +
+    '· "' + PMAXCAT_MANUAL_SHEET + '" — slide 10. Google Ads → Campaigns → Insights → "Search terms ' +
+    'insights" → Download, then paste. Column names are matched loosely, so the export\'s own ' +
+    'headers are fine. A paste here takes PRIORITY over the automated feed, which is the reliable ' +
+    'way to fill slide 10 — the API\'s search-term-insight resources are inconsistently available.\n\n' +
     '· "' + PROMO_SHEET + '" — list promo windows (name, start, end). Slide 12 measures any promo ' +
     'overlapping the report month.');
 }
@@ -5019,6 +5482,27 @@ function firstRunCheck() {
   if (present.length) notes.push('Engine tabs with data: ' + present.join(', ') + '.');
   if (missing.length) notes.push('Engine tabs empty or absent: ' + missing.join(', ') +
     '. Slides 8–12 will render as empty labelled tables until the MCC Google Ads Script runs.');
+
+  // Slide 8's usefulness depends on the FEED, not the config — a dimension that
+  // holds one value everywhere produces a table with one row, which reads as a bug.
+  var dimRows = readEngineTab_(PRODUCT_DIMS_SHEET);
+  if (dimRows.length) {
+    notes.push('Slide 8 dimensions: ' + PRODUCT_DIM_1.field + ' × ' + PRODUCT_DIM_2.field +
+      '. Run Diagnostics → Show product dimensions to see what each one holds in your feed and ' +
+      'whether these are the right two.');
+  } else {
+    notes.push('Slide 8 dimensions: ' + PRODUCT_DIM_1.field + ' × ' + PRODUCT_DIM_2.field +
+      '. No "' + PRODUCT_DIMS_SHEET + '" tab yet, so there is nothing to check them against — ' +
+      're-paste and Run the MCC script to have it probe every dimension.');
+  }
+
+  if (!readEngineTab_(PMAXCAT_MANUAL_SHEET).length && !readEngineTab_(ENGINE_PMAXCAT_SHEET).length) {
+    notes.push('Slide 10 has no data from either source. The reliable route is the paste: Google Ads ' +
+      '→ Campaigns → Insights → "Search terms insights" → Download → paste into the "' +
+      PMAXCAT_MANUAL_SHEET + '" tab (Setup → Create the manual input tabs creates it). Google\'s ' +
+      'search-term-insight API resources are not consistently available, so the automated feed can ' +
+      'come back empty with nothing wrong at your end.');
+  }
 
   if (!DECK_TEMPLATE_ID) {
     notes.push('DECK_TEMPLATE_ID is empty → the Report tab is built but no deck is generated. ' +

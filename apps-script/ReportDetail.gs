@@ -66,10 +66,17 @@ function renderProductBlock_(w, ctx) {
   var month = ctx.periods.current.month;
   var raw = readEngineTab_(ENGINE_PRODUCT_SHEET).filter(function (r) { return monthOf_(r.month) === month; });
 
-  // The engine feed writes the two dimensions under fixed column names `dim1` and
-  // `dim2`, so changing PRODUCT_DIM_* needs no change here. Older tabs written
-  // before that used product_type_l1/l2 — read those as a fallback so an existing
-  // sheet keeps working until the Ads script next runs.
+  // The TAB is the authority on which dimensions its numbers describe — it records
+  // them in dim1_field / dim2_field. Reading the labels from the Settings tab
+  // instead would head the columns with whatever was configured LAST, which after
+  // a settings change but before the next MCC run is a slide that mislabels real
+  // data. That is the one failure mode worth engineering against here, because it
+  // is invisible: the numbers look fine under the wrong heading.
+  var dims = productDimsOf_(raw);
+
+  // Fixed column names `dim1`/`dim2` whatever the dimensions are. Older tabs,
+  // written before that, used product_type_l1/l2 — read those as a fallback so an
+  // existing sheet keeps working until the Ads script next runs.
   var groups = groupEngine_(raw, function (r) {
     var d1 = r.dim1 !== undefined ? r.dim1 : r.product_type_l1;
     var d2 = r.dim2 !== undefined ? r.dim2 : r.product_type_l2;
@@ -90,16 +97,52 @@ function renderProductBlock_(w, ctx) {
   w.block({
     name: 'RPT_PRODUCT', slide: '8', title: 'Product Category Performance',
     note: raw.length
-      ? 'Google Ads engine data, shopping_performance_view segmented by ' + PRODUCT_DIM_1.label +
-        ' × ' + PRODUCT_DIM_2.label + ' (' + PRODUCT_DIM_1.field + ' / ' + PRODUCT_DIM_2.field +
-        '). Sorted by conversion value, top ' + PRODUCT_ROWS + ' rows.'
+      ? 'Google Ads engine data, shopping_performance_view segmented by ' + dims[0].label +
+        ' × ' + dims[1].label + ' (' + dims[0].field + ' / ' + dims[1].field +
+        '). Sorted by conversion value, top ' + PRODUCT_ROWS + ' rows.' + dims.mismatchNote +
+        '  Custom labels are free text your Shopping feed sets, so which ones carry a category is a ' +
+        'property of the feed: run Diagnostics → Show product dimensions to see what each contains, ' +
+        'then set PRODUCT_DIM_1 / PRODUCT_DIM_2 on the Settings tab and re-run the MCC script.'
       : emptyNote_(ENGINE_PRODUCT_SHEET),
-    header: [PRODUCT_DIM_1.label, PRODUCT_DIM_2.label, 'Impr.', 'Clicks', 'Cost',
+    header: [dims[0].label, dims[1].label, 'Impr.', 'Clicks', 'Cost',
              'Avg. CPC', 'Conversions', 'Conv. Value', 'ROAS'],
     rows: padRows_(rows, PRODUCT_ROWS, 9),
     colFormats: [null, null, '#,##0', '#,##0', currencyFormat_(false),
                  currencyFormat_(true), '#,##0', currencyFormat_(false), '#,##0.00'],
   });
+}
+
+/**
+ * The two dimensions the `_eng_product` rows actually describe, as
+ * [ {field,label}, {field,label} ] with a `mismatchNote` string.
+ *
+ * Prefers what the tab recorded over what is configured now, and says so when they
+ * disagree — a settings change only reaches the data on the next MCC run, and in
+ * between, the honest thing is to label the columns for the data that is there.
+ */
+function productDimsOf_(rows) {
+  var configured = [PRODUCT_DIM_1, PRODUCT_DIM_2];
+  var out = configured.slice();
+  out.mismatchNote = '';
+  if (!rows.length) return out;
+
+  var stamped = [String(rows[0].dim1_field || '').trim(), String(rows[0].dim2_field || '').trim()];
+  var drift = [];
+
+  for (var i = 0; i < 2; i++) {
+    if (!stamped[i]) continue;                       // pre-stamp tab: trust config
+    out[i] = dimByField_(stamped[i]);
+    if (stamped[i] !== configured[i].field) {
+      drift.push('PRODUCT_DIM_' + (i + 1) + ' is set to ' + configured[i].field);
+    }
+  }
+
+  if (drift.length) {
+    out.mismatchNote = '  ⚠  These columns are headed for what the tab HOLDS (' +
+      out[0].field + ' / ' + out[1].field + '), but ' + drift.join(' and ') +
+      ' on the Settings tab. Re-run the MCC Google Ads Script to pull the dimensions you asked for.';
+  }
+  return out;
 }
 
 // ============================== SLIDE 9: IMPRESSION SHARE ==================
@@ -218,7 +261,16 @@ function toRatio_(v) {
 
 function renderPmaxCategoryBlock_(w, ctx) {
   var month = ctx.periods.current.month;
-  var raw = readEngineTab_(ENGINE_PMAXCAT_SHEET).filter(function (r) { return monthOf_(r.month) === month; });
+
+  // MANUAL FIRST. The search-term-insight resources carry undocumented constraints
+  // that shift between API versions, so the automated query can come back empty
+  // through no fault of the configuration — and the UI panel that has the data has
+  // a Download button. Anything pasted therefore wins: you looked at it.
+  var manual = readPmaxManual_(month);
+  var raw = manual.rows.length
+    ? manual.rows
+    : readEngineTab_(ENGINE_PMAXCAT_SHEET).filter(function (r) { return monthOf_(r.month) === month; });
+  var source = manual.rows.length ? 'manual' : (raw.length ? 'api' : 'none');
 
   var groups = groupEngine_(raw, function (r) {
     var c = String(r.category || '').trim();
@@ -227,7 +279,7 @@ function renderPmaxCategoryBlock_(w, ctx) {
 
   var rows = groups.map(function (g) {
     // Search volume is a bucketed RANGE in the UI ("10K-100K"), so it passes
-    // through as text when the API returns it and as n/a when it does not.
+    // through as text when the source supplies it and as n/a when it does not.
     var vol = String((g.row && g.row.search_volume) || '').trim();
     return [
       g.key,
@@ -238,21 +290,127 @@ function renderPmaxCategoryBlock_(w, ctx) {
     ];
   });
 
+  var note;
+  if (source === 'manual') {
+    note = 'Pasted by hand into the "' + PMAXCAT_MANUAL_SHEET + '" tab for ' + month +
+      ' — ' + manual.rows.length + ' row(s). A paste takes priority over the API tab, so this is ' +
+      'what the slide shows even if the automated feed also returned data.' +
+      (manual.unmapped.length
+        ? '  ⚠  Unrecognised column(s) ignored: ' + manual.unmapped.join(', ') + '.'
+        : '');
+  } else if (source === 'api') {
+    note = 'Google Ads search-term-category insights, aggregated across Performance Max campaigns ' +
+      'and sorted by conversions.';
+  } else {
+    note = 'EMPTY. Two ways to fill it:  (1) MANUAL — Google Ads → Campaigns → Insights → ' +
+      '"Search terms insights" → Download, then paste into the "' + PMAXCAT_MANUAL_SHEET + '" tab ' +
+      'with Month as ' + month + '. This always works and is the fastest route.  (2) AUTOMATED — ' +
+      'the MCC script tries several query shapes against customer_search_term_insight and ' +
+      'campaign_search_term_insight; if the tab is still empty, the "_eng_status" tab carries the ' +
+      'exact error Google returned for each shape tried, which is what tells a missing permission ' +
+      'apart from a renamed field.';
+  }
+
   w.block({
     name: 'RPT_PMAX_CAT', slide: '10', title: 'Top PMax Search Categories',
-    note: (raw.length
-      ? 'Google Ads campaign_search_term_insight, aggregated across Performance Max campaigns and ' +
-        'sorted by conversions. '
-      : emptyNote_(ENGINE_PMAXCAT_SHEET) + ' ') +
-      'Search Volume is a bucketed range in the Google Ads UI ("10K-100K"). The feed asks for it and ' +
-      'passes it through when the API returns it; where it reads n/a the API did not supply it, and ' +
-      'Impr. on the same row is the usable substitute. If this whole block is empty, the ' +
-      '_eng_status tab carries the exact error Google returned for each query shape tried.',
+    note: note + '  Search Volume is a bucketed range in the Google Ads UI ("10K-100K"); where it ' +
+      'reads n/a the source did not supply it, and Impr. on the same row is the usable substitute.',
     header: ['Search Category', 'Search Volume', 'Conversions', 'Clicks', 'Impr.',
              'Conv. Value', 'CTR', 'Conv. Rate'],
     rows: padRows_(rows, PMAX_CAT_ROWS, 8),
     colFormats: [null, '#,##0', '#,##0', '#,##0', '#,##0', currencyFormat_(false), '0.00%', '0.00%'],
   });
+}
+
+/**
+ * Read the hand-pasted PMax search categories for one month, normalised into the
+ * same row shape the engine tab uses so the renderer cannot tell them apart.
+ *
+ * Column names are matched LOOSELY. A Google Ads export is pasted as-is and its
+ * headers vary by view, locale and Google's own redesigns ("Search category" /
+ * "Search categories" / "Category"), so insisting on exact spellings would turn a
+ * working paste into a silently empty slide. Anything unrecognised is reported
+ * rather than dropped quietly.
+ *
+ * A row with no Month is treated as belonging to the report month: the export does
+ * not carry one, and requiring the column is the mistake most likely to make a
+ * correct paste look like no paste at all.
+ */
+function readPmaxManual_(month) {
+  var raw = readEngineTab_(PMAXCAT_MANUAL_SHEET);
+  if (!raw.length) return { rows: [], unmapped: [] };
+
+  var ALIASES = {
+    month:             ['month', 'reporting month', 'period'],
+    category:          ['search category', 'search categories', 'category', 'search term category',
+                        'categories', 'search category label', 'category label'],
+    search_volume:     ['search volume', 'searches', 'volume', 'monthly searches',
+                        'search volume index'],
+    impressions:       ['impressions', 'impr.', 'impr', 'impressions.'],
+    clicks:            ['clicks'],
+    cost:              ['cost', 'spend', 'cost (usd)', 'amount spent'],
+    conversions:       ['conversions', 'conv.', 'conv', 'all conv.', 'all conversions', 'orders'],
+    conversions_value: ['conv. value', 'conversion value', 'conv value', 'all conv. value',
+                        'value', 'revenue', 'conv. value (usd)'],
+  };
+
+  var present = {}, unmapped = [];
+  Object.keys(raw[0]).forEach(function (h) {
+    var norm = h.replace(/\s+/g, ' ').trim();
+    var hit = null;
+    Object.keys(ALIASES).forEach(function (canon) {
+      if (hit) return;
+      if (ALIASES[canon].indexOf(norm) !== -1) hit = canon;
+    });
+    if (hit) { if (!present[hit]) present[hit] = h; }
+    else if (norm) unmapped.push(h);
+  });
+
+  if (!present.category) {
+    // No category column means this is not a search-categories paste. Report it
+    // through the note rather than showing an empty slide with no explanation.
+    return { rows: [], unmapped: ['no recognisable "Search category" column — found: ' +
+      Object.keys(raw[0]).join(', ')] };
+  }
+
+  var rows = [];
+  for (var i = 0; i < raw.length; i++) {
+    var r = raw[i];
+    var cat = String(r[present.category] || '').trim();
+    if (!cat) continue;
+    // Placeholder text from the example row the tab is seeded with.
+    if (cat.indexOf('Paste your') === 0) continue;
+
+    var m = present.month ? monthOf_(r[present.month]) : '';
+    if (m && m !== month) continue;
+
+    rows.push({
+      month: month,
+      category: cat,
+      search_volume: present.search_volume ? r[present.search_volume] : '',
+      impressions:       present.impressions       ? numLoose_(r[present.impressions])       : 0,
+      clicks:            present.clicks            ? numLoose_(r[present.clicks])            : 0,
+      cost:              present.cost              ? numLoose_(r[present.cost])              : 0,
+      conversions:       present.conversions       ? numLoose_(r[present.conversions])       : 0,
+      conversions_value: present.conversions_value ? numLoose_(r[present.conversions_value]) : 0,
+    });
+  }
+  return { rows: rows, unmapped: unmapped };
+}
+
+/**
+ * A number out of a pasted export: '1,234', '$1,234.56', '12.3%', ' 45 '.
+ * A Google Ads download carries thousands separators and currency symbols, which
+ * Number() turns into NaN — and NaN summed into a total is a silently wrong slide.
+ */
+function numLoose_(v) {
+  if (typeof v === 'number') return isFinite(v) ? v : 0;
+  var s = String(v === null || v === undefined ? '' : v).trim();
+  if (!s || s === '--' || s === '—') return 0;
+  var pct = s.indexOf('%') !== -1;
+  var n = Number(s.replace(/[^0-9.\-]/g, ''));
+  if (!isFinite(n)) return 0;
+  return pct ? n / 100 : n;
 }
 
 // ============================== SLIDE 11: TOP PRODUCTS =====================
@@ -410,6 +568,24 @@ function ensureInputTabs_() {
     a.getRange(2, 1, 1, 2).setValues([['', 'Paste your auction insights export here →']])
       .setFontColor('#9ca3af').setFontStyle('italic');
     for (var c = 1; c <= ah.length; c++) a.autoResizeColumn(c);
+  }
+
+  if (!ss.getSheetByName(PMAXCAT_MANUAL_SHEET)) {
+    var m = ss.insertSheet(PMAXCAT_MANUAL_SHEET);
+    var mh = ['Month', 'Search Category', 'Search Volume', 'Impressions', 'Clicks',
+              'Cost', 'Conversions', 'Conv. Value'];
+    m.getRange(1, 1, 1, mh.length).setValues([mh])
+      .setFontWeight('bold').setBackground(HEAD_BG).setFontColor(HEAD_FG);
+    m.setFrozenRows(1);
+    m.getRange(1, 1).setNote('Slide 10. Google Ads → Campaigns → Insights → "Search terms ' +
+      'insights" → Download, then paste here. Month as yyyy-MM; leave Month empty and the rows ' +
+      'count as the report month.\n\nColumn names are matched loosely, so you can paste the export ' +
+      'with its own headers — only a "Search category" column is required. Anything here takes ' +
+      'PRIORITY over the automated "' + ENGINE_PMAXCAT_SHEET + '" tab.');
+    m.getRange(2, 1, 1, 3).setValues([['', 'Paste your search terms insights export here →', '']])
+      .setFontColor('#9ca3af').setFontStyle('italic');
+    m.getRange(2, 1, 200, 1).setNumberFormat('@');
+    for (var c3 = 1; c3 <= mh.length; c3++) m.autoResizeColumn(c3);
   }
 
   if (!ss.getSheetByName(PROMO_SHEET)) {

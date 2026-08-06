@@ -57,6 +57,7 @@ function onOpen() {
       .addItem('Check data sources', 'diagCheckSources')
       .addItem('Show period coverage', 'diagCoverage')
       .addItem('Show classification summary', 'diagClassification')
+      .addItem('Show product dimensions (slide 8)', 'diagProductDims')
       .addItem('List unclassified campaigns', 'diagUnclassified')
       .addItem('Validate the deck template', 'diagValidateDeck')
       .addItem('List Report tab named ranges', 'diagNamedRanges')
@@ -134,9 +135,13 @@ function createInputTabs() {
   applySettings_();
   ensureInputTabs_();
   tell_('Input tabs ready',
-    'Created (or confirmed) two hand-fed tabs:\n\n' +
+    'Created (or confirmed) three hand-fed tabs:\n\n' +
     '· "' + AUCTION_SHEET + '" — paste your Auction Insights export here. No Google API exposes ' +
     'this data, so slide 9\'s competitor block cannot be automated.\n\n' +
+    '· "' + PMAXCAT_MANUAL_SHEET + '" — slide 10. Google Ads → Campaigns → Insights → "Search terms ' +
+    'insights" → Download, then paste. Column names are matched loosely, so the export\'s own ' +
+    'headers are fine. A paste here takes PRIORITY over the automated feed, which is the reliable ' +
+    'way to fill slide 10 — the API\'s search-term-insight resources are inconsistently available.\n\n' +
     '· "' + PROMO_SHEET + '" — list promo windows (name, start, end). Slide 12 measures any promo ' +
     'overlapping the report month.');
 }
@@ -187,6 +192,27 @@ function firstRunCheck() {
   if (present.length) notes.push('Engine tabs with data: ' + present.join(', ') + '.');
   if (missing.length) notes.push('Engine tabs empty or absent: ' + missing.join(', ') +
     '. Slides 8–12 will render as empty labelled tables until the MCC Google Ads Script runs.');
+
+  // Slide 8's usefulness depends on the FEED, not the config — a dimension that
+  // holds one value everywhere produces a table with one row, which reads as a bug.
+  var dimRows = readEngineTab_(PRODUCT_DIMS_SHEET);
+  if (dimRows.length) {
+    notes.push('Slide 8 dimensions: ' + PRODUCT_DIM_1.field + ' × ' + PRODUCT_DIM_2.field +
+      '. Run Diagnostics → Show product dimensions to see what each one holds in your feed and ' +
+      'whether these are the right two.');
+  } else {
+    notes.push('Slide 8 dimensions: ' + PRODUCT_DIM_1.field + ' × ' + PRODUCT_DIM_2.field +
+      '. No "' + PRODUCT_DIMS_SHEET + '" tab yet, so there is nothing to check them against — ' +
+      're-paste and Run the MCC script to have it probe every dimension.');
+  }
+
+  if (!readEngineTab_(PMAXCAT_MANUAL_SHEET).length && !readEngineTab_(ENGINE_PMAXCAT_SHEET).length) {
+    notes.push('Slide 10 has no data from either source. The reliable route is the paste: Google Ads ' +
+      '→ Campaigns → Insights → "Search terms insights" → Download → paste into the "' +
+      PMAXCAT_MANUAL_SHEET + '" tab (Setup → Create the manual input tabs creates it). Google\'s ' +
+      'search-term-insight API resources are not consistently available, so the automated feed can ' +
+      'come back empty with nothing wrong at your end.');
+  }
 
   if (!DECK_TEMPLATE_ID) {
     notes.push('DECK_TEMPLATE_ID is empty → the Report tab is built but no deck is generated. ' +

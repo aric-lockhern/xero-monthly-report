@@ -104,6 +104,14 @@ first that returns rows. The query that worked is recorded in the tab's
 `_eng_status`**. When the block is empty you therefore learn why from Google's own
 words rather than guessing.
 
+**And there is a paste, which always works.** The UI panel that has this data has a
+**Download** button, so `PMax Categories` is a manual input tab read with **priority
+over** `_eng_pmax_cat`. Column names are matched loosely — paste the export with its
+own headers. This is deliberately not a last resort: whether the API exposes these
+resources to a given account at a given API version is outside your control, and
+slide 10 should not be blocked on it. The block's note always says which source it
+used, so a paste can never be mistaken for automation or vice versa.
+
 **Search Volume** is a bucketed range in the UI ("10K-100K"), not a number. The
 feed asks for `metrics.search_volume` in its richest variant and passes the value
 through when the API supplies it; where the column reads `n/a` it did not, and
@@ -156,6 +164,43 @@ If the URL 404s or needs a login, that one image is skipped and named in `_statu
 the rest of the deck is unaffected.
 
 **Still manual:** slide 12's ad-unit screenshot.
+
+---
+
+## 6a. Slide 8's product dimensions depend on your FEED, not on Google
+
+`shopping_performance_view` can segment by `product_custom_attribute0..4`,
+`product_type_l1..l5`, `product_brand`, `product_condition`, `product_channel`,
+`product_item_id` and `product_title`. Google will happily return any of them.
+
+What it **cannot** tell you is which ones hold anything worth putting on a slide.
+Custom labels are free text the Shopping feed sets. In the real US feed, *Custom
+label 1* is the single value `shoes` for every product and *Custom label 4* is
+`female` / `male` / `unisex` — so a table segmented by those is either one row or a
+gender split, neither of which is a product category. Nothing about that is visible
+from the API, the docs, or the query.
+
+So don't guess. `_eng_product_dims` — written by the MCC script, one query per
+dimension — records every dimension's distinct values with spend and conversion
+value. `Diagnostics → Show product dimensions` reads it, ranks each dimension by
+whether it actually splits spend (a single value splits nothing; mostly `(not set)`
+means the feed never populated it), recommends a pair, and prints the values so you
+can overrule the recommendation on judgement.
+
+Then set `PRODUCT_DIM_1` / `PRODUCT_DIM_2` on the **`Settings` tab**. Both sides read
+those same cells — the Apps Script for the labels, the Google Ads Script for the
+query — so there is no code to edit and the two cannot drift into disagreeing about
+what the deck's columns mean. Re-run the MCC script, then rebuild.
+
+Between the edit and that re-run, the tab still holds the **old** dimensions. The
+block therefore heads its columns from the tab's own `dim1_field` / `dim2_field` and
+states the disagreement in its note, rather than labelling real data with the
+dimension you just asked for. This is the failure mode worth engineering against
+here: the numbers look fine under the wrong heading.
+
+**If no dimension in your feed splits spend usefully**, that is a feed change, not a
+code change — populate a custom label with a category, or accept that slide 8 is
+better served by the item-level table.
 
 ---
 

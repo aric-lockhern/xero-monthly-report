@@ -197,6 +197,89 @@ function checkDeckContract_(t) {
   }
   var unplanned = Object.keys(truth).filter(function (k) { return !planned[k]; });
   t.ok('every deck table is mapped by slidePlan_', unplanned.length === 0, unplanned.join(', '));
+
+  checkProductDims_(t);
+  checkLoosePasteParsing_(t);
+}
+
+/**
+ * Slide 8's two dimensions.
+ *
+ * These are settable from a spreadsheet cell, and a cell that fails to resolve
+ * falls back silently to the Config.gs default — so the failure mode is a slide
+ * headed and segmented by a dimension nobody chose. Pin the resolver instead of
+ * trusting it.
+ */
+function checkProductDims_(t) {
+  t.ok('PRODUCT_DIM_1 is a real product dimension', !!resolveProductDim_(PRODUCT_DIM_1.field),
+    PRODUCT_DIM_1.field + ' is not in PRODUCT_DIM_VOCAB');
+  t.ok('PRODUCT_DIM_2 is a real product dimension', !!resolveProductDim_(PRODUCT_DIM_2.field),
+    PRODUCT_DIM_2.field + ' is not in PRODUCT_DIM_VOCAB');
+
+  // Both columns showing the same dimension is a table that breaks nothing down.
+  t.ok('the two dimensions differ', PRODUCT_DIM_1.field !== PRODUCT_DIM_2.field,
+    'both are ' + PRODUCT_DIM_1.field);
+
+  // Every field in the vocabulary must round-trip, because the Google Ads script
+  // has its own copy of this resolver and either side may be given the other's
+  // output. A field one accepts and the other rejects means the Ads script queries
+  // one dimension while the deck labels another.
+  var bad = [];
+  for (var i = 0; i < PRODUCT_DIM_VOCAB.length; i++) {
+    var field = PRODUCT_DIM_VOCAB[i][0];
+    var got = resolveProductDim_(field);
+    if (!got || got.field !== field) bad.push(field);
+    var byLabel = resolveProductDim_(PRODUCT_DIM_VOCAB[i][1]);
+    if (!byLabel || byLabel.field !== field) bad.push(PRODUCT_DIM_VOCAB[i][1]);
+  }
+  t.ok('every dimension resolves from its field AND its UI label', bad.length === 0, bad.join(', '));
+
+  // The shorthand a person actually types into a cell.
+  t.ok('"Custom label 4" resolves', (resolveProductDim_('Custom label 4') || {}).field ===
+    'product_custom_attribute4');
+  t.ok('"cl4" resolves', (resolveProductDim_('cl4') || {}).field === 'product_custom_attribute4');
+  t.ok('"product_type_l1" resolves', (resolveProductDim_('product_type_l1') || {}).field ===
+    'product_type_l1');
+  t.ok('"l2" resolves', (resolveProductDim_('l2') || {}).field === 'product_type_l2');
+  t.ok('"brand" resolves', (resolveProductDim_('brand') || {}).field === 'product_brand');
+
+  // And must REJECT, so a typo falls back visibly rather than resolving to
+  // something adjacent. cl5 does not exist; label 6 does not exist.
+  t.ok('a non-existent dimension is rejected', resolveProductDim_('cl5') === null);
+  t.ok('nonsense is rejected', resolveProductDim_('shoes') === null);
+  t.ok('empty is rejected', resolveProductDim_('') === null);
+
+  // productDimsOf_ must prefer what the tab recorded, so the columns are always
+  // headed for the data present rather than for the current configuration.
+  var stamped = productDimsOf_([{ dim1_field: 'product_type_l1', dim2_field: 'product_brand' }]);
+  t.ok('the engine tab\'s own dim fields win over the config',
+    stamped[0].field === 'product_type_l1' && stamped[1].field === 'product_brand',
+    stamped[0].field + ' / ' + stamped[1].field);
+  var shouldWarn = PRODUCT_DIM_1.field !== 'product_type_l1' ||
+                   PRODUCT_DIM_2.field !== 'product_brand';
+  t.ok('a config/tab mismatch is reported, not hidden',
+    shouldWarn === (stamped.mismatchNote.length > 0),
+    shouldWarn ? 'expected a warning, got none' : 'warned when config and tab agree');
+  var unstamped = productDimsOf_([{ dim1: 'x', dim2: 'y' }]);
+  t.ok('a pre-stamp engine tab falls back to the configured labels',
+    unstamped[0].field === PRODUCT_DIM_1.field && unstamped.mismatchNote === '');
+}
+
+/**
+ * The pasted-export number parser.
+ *
+ * A Google Ads download carries thousands separators and currency symbols, which
+ * Number() turns into NaN — and one NaN summed into a column is a wrong slide with
+ * nothing visibly broken. Cheap to assert, so assert it.
+ */
+function checkLoosePasteParsing_(t) {
+  t.ok('a thousands separator parses', numLoose_('1,234') === 1234);
+  t.ok('a currency symbol parses', numLoose_('$1,234.56') === 1234.56);
+  t.ok('a percentage becomes a ratio', numLoose_('12.5%') === 0.125);
+  t.ok('Google\'s em-dash blank is zero, not NaN', numLoose_('—') === 0);
+  t.ok('an empty cell is zero', numLoose_('') === 0);
+  t.ok('a real number passes through', numLoose_(42.5) === 42.5);
+  t.ok('a negative parses', numLoose_('-17') === -17);
 }
 
 // ============================== H · SPINE / SOURCE COMBINATION =============

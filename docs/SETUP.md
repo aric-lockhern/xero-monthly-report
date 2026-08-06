@@ -61,8 +61,14 @@ Edit the **Value** column:
 | `REGION` | `US` or `EU` |
 | `CURRENCY` | `USD` or `EUR` |
 | `REPORT_MONTH` | leave **empty** for the last complete month |
+| `PRODUCT_DIM_1` / `PRODUCT_DIM_2` | slide 8's two columns. Leave as-is for now — after step B runs, `Diagnostics → Show product dimensions` tells you what your feed actually holds |
 
 Nothing to save beyond the cell — the next build reads it.
+
+> **`PRODUCT_DIM_*` is read by the Google Ads Script too**, from this same tab. So
+> changing slide 8's dimensions is one cell edit plus a re-run of the MCC script —
+> never a code change in two places. See [`GAPS.md`](GAPS.md) §6a for why the right
+> pair depends on your Shopping feed rather than on Google.
 
 > **Why a tab and not `Config.gs`?** Pasting an updated `dist/Code.gs` replaces the
 > entire Apps Script project, `Config.gs` included, so anything typed into the code
@@ -124,6 +130,12 @@ attributing late orders to renamed or paused campaigns.
   no API at any access level, so slide 9's competitor block is a paste. Google Ads
   → Campaigns → select the brand campaigns → Insights → Auction insights →
   download → paste, with `Month` as `yyyy-MM`.
+- **`PMax Categories`** — slide 10. Google Ads → Campaigns → Insights → *Search
+  terms insights* → **Download** → paste. Column names are matched loosely, so the
+  export's own headers are fine; only a "Search category" column is required, and a
+  row with no `Month` counts as the report month. **A paste here takes priority over
+  the automated feed**, which is the reliable way to fill slide 10 — see
+  [`GAPS.md`](GAPS.md) §4.
 - **`Promos`** — promo windows (`Promo Name`, `Start`, `End`, dates as
   `yyyy-MM-dd`). Any promo overlapping the report month drives slide 12. Leave it
   empty in months with no promotion.
@@ -204,7 +216,26 @@ API version. Fix that one query in `engine-report.js` — the reports are
 independent, so the others already landed. The queries are small and each lives in
 its own `fetch*_` function.
 
-### B4. Schedule
+### B4. Choose slide 8's two dimensions — once
+
+The script writes `_eng_product_dims`: every product dimension with its distinct
+values and spend. Run **`Diagnostics → Show product dimensions`** in the
+spreadsheet. It ranks the dimensions by whether they actually split spend and
+recommends a pair.
+
+Do this once, because the answer is a property of the Shopping feed and won't change
+month to month. Set `PRODUCT_DIM_1` / `PRODUCT_DIM_2` on the `Settings` tab, **re-run
+this script**, then rebuild.
+
+> Custom labels are free text the feed sets. In the US feed, *Custom label 1* is
+> `shoes` for every product — a perfectly valid dimension that makes a one-row
+> slide. The diagnostic exists so you find that out in one screen rather than by
+> shipping it. [`GAPS.md`](GAPS.md) §6a.
+>
+> Until you re-run this script, slide 8 still holds the previous dimensions, and the
+> block says so in its note rather than relabelling data it didn't fetch.
+
+### B5. Schedule
 
 Schedule the script **monthly, on day 1**. It must run before the Apps Script
 side, which defaults to day 3.

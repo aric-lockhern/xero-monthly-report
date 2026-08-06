@@ -272,6 +272,45 @@
       2100
     ]
   ],
+  "_comment_product_dims": [
+    "What each product dimension CONTAINS, written by fetchProductDims_() — one",
+    "query per dimension, top 25 values each. Feeds Diagnostics → Show product",
+    "dimensions, which is how you choose PRODUCT_DIM_1 / PRODUCT_DIM_2 instead of",
+    "guessing and re-running the whole chain.",
+    "",
+    "Modelled on the real US feed as reported: custom label 1 is the single value",
+    "'shoes' for every product, and custom label 4 is female/male/unisex. Both are",
+    "therefore USELESS as a slide-8 category, which is the whole reason this tab",
+    "exists — the diagnostic must rank them below product_type_l1 and say so.",
+    "product_custom_attribute0 is mostly unpopulated, the other failure mode."
+  ],
+  "_eng_product_dims": [
+    ["month", "dimension", "value", "impressions", "clicks", "cost", "conversions", "conversions_value"],
+
+    ["$REPORT_MONTH", "product_custom_attribute0", "(not set)", 3200000, 44000, 55000, 1300, 178000],
+    ["$REPORT_MONTH", "product_custom_attribute0", "seasonal", 320000, 4100, 5200, 130, 17000],
+
+    ["$REPORT_MONTH", "product_custom_attribute1", "shoes", 3520000, 48100, 60200, 1430, 195000],
+
+    ["$REPORT_MONTH", "product_custom_attribute4", "unisex", 1900000, 26000, 32500, 780, 105000],
+    ["$REPORT_MONTH", "product_custom_attribute4", "female", 980000, 13400, 16800, 400, 54000],
+    ["$REPORT_MONTH", "product_custom_attribute4", "male", 640000, 8700, 10900, 250, 36000],
+
+    ["$REPORT_MONTH", "product_type_l1", "Trail", 1420000, 19100, 24200, 610, 84100],
+    ["$REPORT_MONTH", "product_type_l1", "Everyday", 1180000, 16200, 19800, 465, 61200],
+    ["$REPORT_MONTH", "product_type_l1", "Sandals", 660000, 9300, 10300, 268, 34500],
+    ["$REPORT_MONTH", "product_type_l1", "Water", 340000, 4900, 5600, 141, 17800],
+    ["$REPORT_MONTH", "product_type_l1", "Boots", 96000, 1250, 1800, 34, 5100],
+
+    ["$REPORT_MONTH", "product_type_l2", "Trail Running", 820000, 11200, 14100, 355, 49000],
+    ["$REPORT_MONTH", "product_type_l2", "Hiking", 600000, 7900, 10100, 255, 35100],
+    ["$REPORT_MONTH", "product_type_l2", "Casual", 1180000, 16200, 19800, 465, 61200],
+    ["$REPORT_MONTH", "product_type_l2", "Flip Flops", 660000, 9300, 10300, 268, 34500],
+
+    ["$REPORT_MONTH", "product_brand", "Xero Shoes", 3520000, 48100, 60200, 1430, 195000],
+
+    ["$REPORT_MONTH", "product_type_l3", "(not set)", 3520000, 48100, 60200, 1430, 195000]
+  ],
   "_eng_pmax_cat": [
     [
       "month",

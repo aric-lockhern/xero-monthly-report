@@ -40,7 +40,7 @@ function diagCheckSources() {
   lines.push('');
   lines.push('GOOGLE ADS ENGINE TABS');
   var tabs = [ENGINE_DAY_SHEET, ENGINE_PRODUCT_SHEET, ENGINE_PMAXCAT_SHEET,
-              ENGINE_ITEM_SHEET, ENGINE_ASSET_SHEET];
+              ENGINE_ITEM_SHEET, ENGINE_ASSET_SHEET, PRODUCT_DIMS_SHEET];
   for (var t = 0; t < tabs.length; t++) {
     var rows = readEngineTab_(tabs[t]);
     lines.push('  ' + tabs[t] + ': ' + (rows.length ? rows.length + ' rows' : 'empty / absent'));
@@ -49,9 +49,108 @@ function diagCheckSources() {
   lines.push('');
   lines.push('MANUAL INPUT TABS');
   lines.push('  ' + AUCTION_SHEET + ': ' + readEngineTab_(AUCTION_SHEET).length + ' rows');
+  lines.push('  ' + PMAXCAT_MANUAL_SHEET + ': ' + readEngineTab_(PMAXCAT_MANUAL_SHEET).length + ' rows');
   lines.push('  ' + PROMO_SHEET + ': ' + readEngineTab_(PROMO_SHEET).length + ' rows');
 
   tell_('Data sources', lines.join('\n'));
+}
+
+/**
+ * What each product dimension actually CONTAINS — the answer to "which two should
+ * slide 8 use?".
+ *
+ * Custom labels are free text the Shopping feed sets, so no amount of reading
+ * Google's docs reveals whether label 1 holds a category or the single word
+ * "shoes". Guessing costs a full round trip (edit config → re-run the MCC script →
+ * rebuild → look at the deck) and the answer is only visible at the end of it.
+ * This turns that into reading one screen.
+ *
+ * Ranks by how useful each dimension looks — several distinct values, little
+ * "(not set)" — and recommends the top two, but shows the values so you can
+ * overrule it on judgement rather than on the score.
+ */
+function diagProductDims() {
+  applySettings_();
+  var raw = readEngineTab_(PRODUCT_DIMS_SHEET);
+
+  if (!raw.length) {
+    tell_('No dimension data yet',
+      'The "' + PRODUCT_DIMS_SHEET + '" tab is empty or absent.\n\n' +
+      'It is written by the MCC Google Ads Script (google-ads-script/engine-report.js). If you ' +
+      'installed that script before this feature existed, re-paste it and Run — it probes every ' +
+      'product dimension and writes what each one contains.\n\n' +
+      'Currently configured for slide 8:\n  ' +
+      PRODUCT_DIM_1.field + '  (' + PRODUCT_DIM_1.label + ')\n  ' +
+      PRODUCT_DIM_2.field + '  (' + PRODUCT_DIM_2.label + ')');
+    return;
+  }
+
+  // dimension → { values: [{value, cost, conv_value}], cost, notSetCost }
+  var dims = {}, order = [];
+  for (var i = 0; i < raw.length; i++) {
+    var r = raw[i];
+    var d = String(r.dimension || '').trim();
+    if (!d) continue;
+    if (!dims[d]) { dims[d] = { name: d, values: [], cost: 0, notSetCost: 0 }; order.push(d); }
+    var value = String(r.value === undefined || r.value === null ? '' : r.value).trim() || '(not set)';
+    var cost = num_(r.cost), cv = num_(r.conversions_value);
+    dims[d].values.push({ value: value, cost: cost, cv: cv });
+    dims[d].cost += cost;
+    if (value === '(not set)') dims[d].notSetCost += cost;
+  }
+
+  var scored = order.map(function (d) {
+    var x = dims[d];
+    var real = x.values.filter(function (v) { return v.value !== '(not set)'; });
+    // A dimension is useful when it SPLITS spend. One value splits nothing; a
+    // hundred values (item id, title) splits it past the point a 16-row slide can
+    // show. Mostly "(not set)" means the feed never populated it.
+    var distinct = real.length;
+    var coverage = x.cost > 0 ? (x.cost - x.notSetCost) / x.cost : 0;
+    var spread = distinct <= 1 ? 0 : (distinct <= 40 ? 1 : 0.4);
+    x.distinct = distinct;
+    x.coverage = coverage;
+    x.score = spread * coverage * (distinct <= 1 ? 0 : 1);
+    x.top = real.sort(function (a, b) { return b.cost - a.cost; }).slice(0, 6);
+    return x;
+  }).sort(function (a, b) { return b.score - a.score || b.distinct - a.distinct; });
+
+  var money = function (n) { return '$' + Math.round(n).toLocaleString('en-US'); };
+  var lines = [];
+  lines.push('Currently on slide 8:  ' + PRODUCT_DIM_1.field + '  ×  ' + PRODUCT_DIM_2.field);
+  lines.push('');
+
+  var usable = scored.filter(function (x) { return x.score > 0; });
+  if (usable.length >= 2) {
+    lines.push('SUGGESTED:  PRODUCT_DIM_1 = ' + usable[0].name +
+      '     PRODUCT_DIM_2 = ' + usable[1].name);
+  } else if (usable.length === 1) {
+    lines.push('SUGGESTED:  PRODUCT_DIM_1 = ' + usable[0].name +
+      '   — only one dimension in this feed splits spend usefully. Pair it with anything below.');
+  } else {
+    lines.push('⚠  No dimension in this feed splits spend usefully — every one is either a single ' +
+      'value or unpopulated. Slide 8 may need product_type_l1 from a feed change, or to become an ' +
+      'item-level table.');
+  }
+  lines.push('');
+  lines.push('Set them on the Settings tab, then RE-RUN THE MCC SCRIPT and rebuild. The Google Ads ' +
+    'script reads those same cells, so there is no code to edit.');
+  lines.push('');
+
+  for (var s = 0; s < scored.length; s++) {
+    var x = scored[s];
+    lines.push(x.name + '   ' + x.distinct + ' value(s), ' +
+      Math.round(x.coverage * 100) + '% of spend populated' +
+      (x.score > 0 ? '' : '   ← not usable'));
+    if (!x.top.length) { lines.push('     (nothing populated)'); continue; }
+    for (var v = 0; v < x.top.length; v++) {
+      lines.push('     ' + x.top[v].value + '  —  ' + money(x.top[v].cost) + ' cost, ' +
+        money(x.top[v].cv) + ' conv. value');
+    }
+    if (x.distinct > x.top.length) lines.push('     … and ' + (x.distinct - x.top.length) + ' more');
+  }
+
+  tell_('Product dimensions in your feed', lines.join('\n'));
 }
 
 function diagCoverage() {

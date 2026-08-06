@@ -24,6 +24,13 @@ Google Ads → Campaigns → select the brand campaigns → Insights → Auction
 → download. Paste into the `Auction Insights` tab with `Month` as `yyyy-MM`.
 Nothing else can produce this data ([GAPS §1](GAPS.md)).
 
+**☐ Paste last month's PMax search categories.**
+Google Ads → Campaigns → Insights → *Search terms insights* → **Download**. Paste
+into the `PMax Categories` tab — the export's own headers are fine, and a blank
+`Month` counts as the report month. This takes priority over the automated feed and
+is the reliable way to fill slide 10 ([GAPS §4](GAPS.md)). Skip it only if
+`_eng_pmax_cat` came back populated.
+
 **☐ Add any promo windows.**
 `Promos` tab: `Promo Name`, `Start`, `End` as `yyyy-MM-dd`. Skip if there was no
 promotion — and delete slide 12 from the deck, as its speaker notes say.

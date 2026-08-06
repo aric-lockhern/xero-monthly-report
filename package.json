@@ -4,6 +4,7 @@
   "private": true,
   "description": "Builds the Xero Shoes monthly paid-media review deck from Triple Whale and Google Ads",
   "scripts": {
+    "sample-store": "node tools/make-sample-store.js tools/.store.csv",
     "test": "node tools/harness.js --store ${STORE:-tools/.store.csv} --engine --quiet",
     "test:verbose": "node tools/harness.js --store ${STORE:-tools/.store.csv} --engine",
     "test:bare": "node tools/harness.js --store ${STORE:-tools/.store.csv} --quiet",

@@ -357,24 +357,34 @@ function insertProductImage_(slide, frame, url, skipped, label) {
 }
 
 /**
- * Rewrite slide 8's first two header cells from PRODUCT_DIM_*.label.
+ * Rewrite slide 8's first two header cells to match the data underneath them.
  *
  * The table writer only fills DATA rows, so without this the deck would keep
  * saying "Product Type (1st)" over columns that now hold Custom Label 1 — a
  * mislabelled column being far worse than an empty one, because nothing looks
  * wrong.
+ *
+ * The labels come from RPT_PRODUCT's own header row rather than from
+ * PRODUCT_DIM_*.label, so they follow renderProductBlock_'s decision about which
+ * dimensions the rows actually describe. Two places computing the heading is how
+ * they end up disagreeing.
  */
 function fillProductHeaders_(slides, skipped) {
   if (slides.length < 8) return;
   var tables = slides[7].getTables();
   if (!tables.length) { skipped.push('slide 8: no table found to relabel'); return; }
 
+  var block = namedDisplayValues_('RPT_PRODUCT');
+  var labels = (block && block.length && block[0].length >= 2)
+    ? [block[0][0], block[0][1]]
+    : [PRODUCT_DIM_1.label, PRODUCT_DIM_2.label];
+
   var table = tables[0];
   if (table.getNumColumns() < 2) return;
   try {
-    table.getCell(0, 0).getText().setText(PRODUCT_DIM_1.label);
-    table.getCell(0, 1).getText().setText(PRODUCT_DIM_2.label);
-    progress_('Slide 8: headers set to ' + PRODUCT_DIM_1.label + ' / ' + PRODUCT_DIM_2.label + '.');
+    table.getCell(0, 0).getText().setText(labels[0]);
+    table.getCell(0, 1).getText().setText(labels[1]);
+    progress_('Slide 8: headers set to ' + labels[0] + ' / ' + labels[1] + '.');
   } catch (e) {
     skipped.push('slide 8: could not relabel the first two headers — ' + e.message);
   }

@@ -185,8 +185,79 @@ var PRODUCT_ROWS   = 16;   // slide 8  — top product sub-categories
 // LABEL is what the deck's column header should read; the Slides writer rewrites
 // slide 8's first two header cells to match, so the deck can never disagree with
 // the data underneath it.
-var PRODUCT_DIM_1 = { field: 'product_custom_attribute1', label: 'Custom Label 1' };
-var PRODUCT_DIM_2 = { field: 'product_custom_attribute4', label: 'Custom Label 4' };
+// Which two dimensions is a per-feed question, not a Google one — custom labels
+// are free text the Shopping feed sets, so whether label 1 holds a category or the
+// single word "shoes" depends on the feed. Set these on the SETTINGS TAB, not
+// here: the Google Ads Script reads the same tab, so one cell changes both sides.
+// `Diagnostics → Show product dimensions` prints what each one actually contains.
+var PRODUCT_DIM_1 = { field: 'product_type_l1',  label: 'Product Type 1' };
+var PRODUCT_DIM_2 = { field: 'product_type_l2',  label: 'Product Type 2' };
+
+/**
+ * Every product dimension `shopping_performance_view` can segment by, and the
+ * deck column header each should read. Also the validator for the Settings tab.
+ *
+ * Custom labels are ZERO-indexed in the API and the UI agrees — the UI's "Custom
+ * label 1" is segments.product_custom_attribute1 — so the numbers line up.
+ */
+var PRODUCT_DIM_VOCAB = [
+  ['product_custom_attribute0', 'Custom Label 0'],
+  ['product_custom_attribute1', 'Custom Label 1'],
+  ['product_custom_attribute2', 'Custom Label 2'],
+  ['product_custom_attribute3', 'Custom Label 3'],
+  ['product_custom_attribute4', 'Custom Label 4'],
+  ['product_type_l1', 'Product Type 1'],
+  ['product_type_l2', 'Product Type 2'],
+  ['product_type_l3', 'Product Type 3'],
+  ['product_type_l4', 'Product Type 4'],
+  ['product_type_l5', 'Product Type 5'],
+  ['product_brand', 'Brand'],
+  ['product_condition', 'Condition'],
+  ['product_channel', 'Channel'],
+  ['product_item_id', 'Item ID'],
+  ['product_title', 'Product Title'],
+];
+
+/**
+ * Accept a dimension written any of the ways someone would reasonably write it —
+ * the API field, the UI's label, or shorthand — and return { field, label }, or
+ * null if it is not a real dimension.
+ *
+ * Tolerant on input because this is typed into a spreadsheet cell by hand, and a
+ * rejected value silently falls back to the default, which is worse than
+ * accepting "custom label 4".
+ */
+function resolveProductDim_(input) {
+  var s = String(input === null || input === undefined ? '' : input)
+    .trim().toLowerCase().replace(/[\s_\-.]/g, '');
+  if (!s) return null;
+
+  for (var i = 0; i < PRODUCT_DIM_VOCAB.length; i++) {
+    var field = PRODUCT_DIM_VOCAB[i][0], label = PRODUCT_DIM_VOCAB[i][1];
+    if (s === field.replace(/_/g, '')) return { field: field, label: label };
+    if (s === label.toLowerCase().replace(/\s/g, '')) return { field: field, label: label };
+  }
+
+  // Shorthand: cl3 / label3 / customlabel3 → attribute3;  pt2 / type2 / l2 → l2.
+  var m = s.match(/^(?:cl|customlabel|label|attr|attribute|customattribute)(\d)$/);
+  if (m && Number(m[1]) <= 4) return dimByField_('product_custom_attribute' + m[1]);
+  m = s.match(/^(?:pt|producttype|type|l)(\d)$/);
+  if (m && Number(m[1]) >= 1 && Number(m[1]) <= 5) return dimByField_('product_type_l' + m[1]);
+
+  return null;
+}
+
+function dimByField_(field) {
+  for (var i = 0; i < PRODUCT_DIM_VOCAB.length; i++) {
+    if (PRODUCT_DIM_VOCAB[i][0] === field) {
+      return { field: field, label: PRODUCT_DIM_VOCAB[i][1] };
+    }
+  }
+  // An unknown field is still readable — the engine tab is the authority on what
+  // it holds, so label it with the raw field rather than dropping it.
+  return { field: field, label: field };
+}
+
 var PMAX_CAT_ROWS  = 16;   // slide 10 — top PMax search categories
 var TOP_ITEM_ROWS  = 5;    // slide 11 — product cards
 var PROMO_ROWS     = 3;    // slide 12 — promo sitelinks (a Grand Total row is added)
@@ -197,6 +268,11 @@ var REPORT_SHEET   = 'Report';           // slide-shaped output blocks
 var MAP_SHEET      = 'Campaign Map';     // classification review + overrides
 var AUCTION_SHEET  = 'Auction Insights'; // manual paste (no API — see docs/GAPS.md)
 var PROMO_SHEET    = 'Promos';           // manual promo windows
+// Manual paste for slide 10, from the Google Ads UI's "Search terms insights"
+// panel Download button. Read with PRIORITY over the API tab: if you pasted it,
+// you looked at it, so it beats whatever a query shape guessed at.
+var PMAXCAT_MANUAL_SHEET = 'PMax Categories';
+var PRODUCT_DIMS_SHEET   = '_eng_product_dims';  // dimension discovery (read-only here)
 var STATUS_SHEET   = '_status';          // live run log
 
 // ============================== PRESENTATION ===============================

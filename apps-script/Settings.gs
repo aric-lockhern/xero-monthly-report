@@ -57,6 +57,12 @@ function settingsSpec_() {
     ['PRODUCT_FEED_URL', 'Shopping feed URL (product images)', null,
      'Your Merchant Center / Shopping feed — Google Shopping XML (<g:id>, <g:image_link>) or a TSV/CSV with id and image_link columns. Fills slide 11\'s product photos via Setup → Refresh product images. Must be publicly reachable. The Google Ads API exposes no product image URL, so this is the only automated source.'],
 
+    ['PRODUCT_DIM_1', 'Slide 8 — first product dimension', function (v) { return !!resolveProductDim_(v); },
+     'The left-hand column of slide 8. Custom Label 0-4, Product Type 1-5, Brand, Condition, Channel, Item ID or Product Title. THE GOOGLE ADS SCRIPT READS THIS SAME CELL, so changing it needs no code edit — change it, re-run the MCC script, rebuild. Run Diagnostics → Show product dimensions first to see what each one actually contains in your feed.'],
+
+    ['PRODUCT_DIM_2', 'Slide 8 — second product dimension', function (v) { return !!resolveProductDim_(v); },
+     'The second column of slide 8, broken out within the first. Same vocabulary as PRODUCT_DIM_1.'],
+
     ['CVR_BASIS', 'TW CVR basis', function (v) { return ['clicks', 'sessions'].indexOf(v.toLowerCase()) !== -1; },
      'clicks or sessions. sessions needs TW_SESSION_FIELD set and that column present in the Triple Whale store — see docs/GAPS.md §3.'],
 
@@ -103,6 +109,10 @@ function applySettings_() {
       case 'CVR_BASIS':             CVR_BASIS = value; break;
       case 'TW_SESSION_FIELD':      TW_SESSION_FIELD = value; break;
       case 'PRODUCT_FEED_URL':      PRODUCT_FEED_URL = value; break;
+      // Stored as a free-text dimension name; normalised to { field, label } so
+      // the deck header can never disagree with the field that was queried.
+      case 'PRODUCT_DIM_1':         PRODUCT_DIM_1 = resolveProductDim_(value); break;
+      case 'PRODUCT_DIM_2':         PRODUCT_DIM_2 = resolveProductDim_(value); break;
       default: continue;
     }
     applied.push(key);
@@ -193,6 +203,8 @@ function defaultFor_(key) {
     case 'CVR_BASIS':             return CVR_BASIS;
     case 'TW_SESSION_FIELD':      return TW_SESSION_FIELD;
     case 'PRODUCT_FEED_URL':      return PRODUCT_FEED_URL;
+    case 'PRODUCT_DIM_1':         return PRODUCT_DIM_1 ? PRODUCT_DIM_1.field : '';
+    case 'PRODUCT_DIM_2':         return PRODUCT_DIM_2 ? PRODUCT_DIM_2.field : '';
     default: return '';
   }
 }
@@ -216,7 +228,9 @@ function openSettings() {
     '  Report month        ' + (REPORT_MONTH || '(last complete month)') + '\n' +
     '  Triple Whale sheet  ' + (TW_SPREADSHEET_ID ? TW_SPREADSHEET_ID : 'NOT SET') + '\n' +
     '  Deck template       ' + (DECK_TEMPLATE_ID ? DECK_TEMPLATE_ID : 'NOT SET — no deck will be generated') + '\n' +
-    '  CVR basis           ' + CVR_BASIS);
+    '  CVR basis           ' + CVR_BASIS + '\n' +
+    '  Slide 8 dimensions  ' + PRODUCT_DIM_1.label + ' × ' + PRODUCT_DIM_2.label +
+      '  (' + PRODUCT_DIM_1.field + ' / ' + PRODUCT_DIM_2.field + ')');
 }
 
 /**

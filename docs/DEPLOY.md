@@ -34,19 +34,36 @@ The fastest loop, and the one to use for every future change.
 # One-time
 npm install                    # only needs @google/clasp; the harness is dependency-free
 
-# Export the Triple Whale store once
-#   In the Triple Whale sheet: right-click the tab strip -> unhide `_store`
-#   File -> Download -> Comma-separated values (with _store active)
-mv ~/Downloads/*_store.csv tools/.store.csv     # gitignored — real client data
+# A synthetic store, so you can run this before touching any client data.
+# Deterministic and calibrated to the real report-month spend, so the self-test's
+# engine-vs-Triple-Whale cross-check is meaningful rather than always red.
+npm run sample-store
 
 npm test
 ```
 
-You get the whole report built in memory and all ~100 invariants checked:
+To test against the real numbers instead:
+
+```bash
+#   In the Triple Whale sheet: right-click the tab strip -> unhide `_store`
+#   File -> Download -> Comma-separated values (with _store active)
+mv ~/Downloads/*_store.csv tools/.store.csv     # gitignored — real client data
+npm test
+```
+
+Either way you get the whole report built in memory and every invariant checked:
 
 ```
-✓ all 102 invariants hold.
+✓ all 166 invariants hold.
+
+✓ harness checks: product images, slide 8 dimensions, slide 10 paste, cross-runtime resolvers.
 ```
+
+The second line is the harness's own checks — the things `SelfTest.gs` cannot see
+from inside a spreadsheet: product image resolution, the loose column matching that
+makes a pasted Google Ads export work, and the fact that the two copies of the
+product-dimension resolver (one per runtime — Apps Script and Google Ads Scripts have
+no module system between them) agree on every input.
 
 The exit code is non-zero on failure, so this drops into CI or a pre-commit hook
 unchanged.
@@ -58,6 +75,7 @@ unchanged.
 | `npm run test:verbose` | also prints every block, so you can eyeball real numbers |
 | `npm run test:eu` | EU region against `tools/.store-eu.csv` |
 | `npm run check` | syntax-check every file |
+| `npm run sample-store` | write a synthetic `tools/.store.csv` — no client data needed |
 
 Useful flags: `--month 2026-06` to rebuild a past month, `--blocks RPT_BLENDED`
 to print just one table.

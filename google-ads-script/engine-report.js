@@ -65,20 +65,33 @@ var CONFIG = {
   TAB_ASSET:    '_eng_asset',
   TAB_STATUS:   '_eng_status',
 
+  // Every product dimension with its distinct values and spend, so you can SEE
+  // what each custom label actually contains and choose the two worth reporting,
+  // instead of guessing and re-running.
+  TAB_PRODUCT_DIMS: '_eng_product_dims',
+
   // NOT written by this script — listed only so writeTab_ can refuse to touch
   // it. Hand-imported engine history (e.g. a one-time Microsoft Ads export of
   // the months before Triple Whale existed) lives here and must survive every
   // run. Must match ENGINE_MANUAL_SHEET in the Apps Script Config.gs.
   TAB_MANUAL_NEVER_WRITE: '_eng_manual',
 
-  // The two dimensions slide 8 breaks products down by. MUST match PRODUCT_DIM_1
-  // and PRODUCT_DIM_2 in the Apps Script Config.gs.
+  // The two dimensions slide 8 breaks products down by — DEFAULTS ONLY.
+  //
+  // The reporting spreadsheet's `Settings` tab overrides these if it names a
+  // dimension there (PRODUCT_DIM_1 / PRODUCT_DIM_2). That is deliberately the same
+  // cell the Apps Script side reads, so switching dimension is one spreadsheet
+  // edit and a re-run — never a code change in two places that can drift apart.
   //
   // Google's custom labels are zero-indexed in the API: the UI's "Custom label 1"
   // is segments.product_custom_attribute1. Other options include product_type_l1
   // ..l5, product_brand, product_condition, product_channel.
-  PRODUCT_DIM_1: 'product_custom_attribute1',
-  PRODUCT_DIM_2: 'product_custom_attribute4',
+  PRODUCT_DIM_1: 'product_type_l1',
+  PRODUCT_DIM_2: 'product_type_l2',
+
+  // The Settings tab in the reporting spreadsheet. Must match SETTINGS_SHEET in
+  // the Apps Script Config/Settings.gs.
+  TAB_SETTINGS: 'Settings',
 
   // Rows to keep per detail report, per month, ordered by conversion value.
   TOP_PRODUCT_ROWS: 60,
@@ -107,6 +120,7 @@ function main() {
   }
 
   var ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  var settingsNote = applySpreadsheetSettings_(ss);
   var range = dateRange_(CONFIG.MONTHS_BACK);
   var detailRange = dateRange_(CONFIG.DETAIL_MONTHS_BACK);
   var log = [];
@@ -126,6 +140,7 @@ function main() {
     { tab: CONFIG.TAB_ITEM,     header: HEADER_ITEM,     fn: fetchItems_,          range: detailRange },
     { tab: CONFIG.TAB_PMAX_CAT, header: HEADER_PMAX_CAT, fn: fetchPmaxCategories_, range: detailRange },
     { tab: CONFIG.TAB_ASSET,    header: HEADER_ASSET,    fn: fetchAssets_,         range: detailRange },
+    { tab: CONFIG.TAB_PRODUCT_DIMS, header: HEADER_PRODUCT_DIMS, fn: fetchProductDims_, range: detailRange },
   ];
 
   for (var i = 0; i < reports.length; i++) {
@@ -155,8 +170,83 @@ function main() {
     log.push([rep.tab, errors.length ? 'PARTIAL' : 'OK', errors.join(' | '), rows.length]);
   }
 
+  log.push(['(settings)', 'INFO', settingsNote, '']);
   writeStatus_(ss, log, range, detailRange, accounts);
   Logger.log('Done. ' + log.map(function (l) { return l[0] + '=' + l[1]; }).join(', '));
+}
+
+// ============================== SETTINGS FROM THE SPREADSHEET ==============
+
+/**
+ * The product dimensions slide 8 uses are a per-feed choice that gets iterated on,
+ * so they live on the reporting spreadsheet's `Settings` tab — the SAME cells the
+ * Apps Script side reads. Changing dimension is then one edit, and the two sides
+ * cannot drift into disagreeing about what the deck's columns mean.
+ *
+ * Non-fatal by design: no tab, no rows, or a value that is not a real dimension
+ * all fall back to the CONFIG defaults above and say so on `_eng_status`.
+ */
+function applySpreadsheetSettings_(ss) {
+  var notes = [];
+  var sheet = ss.getSheetByName(CONFIG.TAB_SETTINGS);
+  if (!sheet || sheet.getLastRow() < 2) {
+    return 'No "' + CONFIG.TAB_SETTINGS + '" tab — using script defaults: ' +
+      CONFIG.PRODUCT_DIM_1 + ' / ' + CONFIG.PRODUCT_DIM_2 +
+      '. Run Monthly Report → Setup → Settings in the spreadsheet to create it.';
+  }
+
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getValues();
+  var stored = {};
+  for (var i = 0; i < values.length; i++) {
+    var key = String(values[i][0] || '').trim();
+    if (key) stored[key] = values[i][1];
+  }
+
+  ['PRODUCT_DIM_1', 'PRODUCT_DIM_2'].forEach(function (key) {
+    var raw = String(stored[key] === undefined ? '' : stored[key]).trim();
+    if (!raw) return;
+    var field = resolveDimField_(raw);
+    if (!field) {
+      notes.push(key + '="' + raw + '" is not a product dimension — ignored, kept ' + CONFIG[key]);
+      return;
+    }
+    if (field === CONFIG[key]) return;
+    notes.push(key + ': ' + CONFIG[key] + ' → ' + field);
+    CONFIG[key] = field;
+  });
+
+  Logger.log('Product dimensions: ' + CONFIG.PRODUCT_DIM_1 + ' × ' + CONFIG.PRODUCT_DIM_2 +
+    (notes.length ? '   (' + notes.join('; ') + ')' : '   (from script defaults)'));
+
+  return 'Slide 8 dimensions: ' + CONFIG.PRODUCT_DIM_1 + ' × ' + CONFIG.PRODUCT_DIM_2 +
+    (notes.length ? '  ·  ' + notes.join('; ') : '  ·  no override on the Settings tab');
+}
+
+/**
+ * Same tolerant vocabulary as resolveProductDim_() on the Apps Script side: the
+ * API field, the UI's label, or shorthand. Returns the GAQL field or null.
+ *
+ * Duplicated rather than shared because Google Ads Scripts and Apps Script are two
+ * separate runtimes with no module system between them. Keep the two in step — the
+ * Apps Script self-test asserts its own copy accepts every field listed here.
+ */
+function resolveDimField_(input) {
+  var s = String(input).trim().toLowerCase().replace(/[\s_\-.]/g, '');
+  var named = {
+    productbrand: 'product_brand', brand: 'product_brand',
+    productcondition: 'product_condition', condition: 'product_condition',
+    productchannel: 'product_channel', channel: 'product_channel',
+    productitemid: 'product_item_id', itemid: 'product_item_id',
+    producttitle: 'product_title', title: 'product_title',
+  };
+  if (named[s]) return named[s];
+
+  var m = s.match(/^(?:productcustomattribute|cl|customlabel|label|attr|attribute|customattribute)(\d)$/);
+  if (m && Number(m[1]) <= 4) return 'product_custom_attribute' + m[1];
+  m = s.match(/^(?:producttypel|pt|producttype|type|l)(\d)$/);
+  if (m && Number(m[1]) >= 1 && Number(m[1]) <= 5) return 'product_type_l' + m[1];
+
+  return null;
 }
 
 // ============================== ACCOUNTS ===================================
@@ -288,6 +378,67 @@ function fetchProductTypes_(range) {
 /** snake_case GAQL field → the lowerCamelCase key AdsApp.search() returns. */
 function camel_(field) {
   return String(field).replace(/_([a-z0-9])/g, function (m, c) { return c.toUpperCase(); });
+}
+
+// ============================== REPORT: DIMENSION DISCOVERY ================
+
+var HEADER_PRODUCT_DIMS = ['month', 'dimension', 'value', 'impressions', 'clicks', 'cost',
+                           'conversions', 'conversions_value'];
+
+/**
+ * What every product dimension actually CONTAINS.
+ *
+ * Custom labels are free text the feed sets, so which one holds a useful category
+ * is a property of the feed, not of Google. Guessing costs a full round trip —
+ * change the config, re-run, rebuild, look at the deck — and "Custom Label 1 =
+ * shoes for every product" is only visible at the end of it.
+ *
+ * This exports every dimension's distinct values with spend, so choosing the right
+ * two is a matter of reading one tab.
+ *
+ * One query per dimension rather than one query selecting all of them: segmenting
+ * by several product dimensions at once multiplies the rows out and reports the
+ * cross-product rather than each dimension's own totals.
+ */
+function fetchProductDims_(range) {
+  var dims = [
+    'product_custom_attribute0', 'product_custom_attribute1', 'product_custom_attribute2',
+    'product_custom_attribute3', 'product_custom_attribute4',
+    'product_type_l1', 'product_type_l2', 'product_type_l3',
+    'product_brand',
+  ];
+
+  var month = range.end.slice(0, 7);
+  var out = [], failures = [];
+
+  for (var d = 0; d < dims.length; d++) {
+    var field = dims[d], key = camel_(field);
+    var q = 'SELECT segments.' + field + ', metrics.impressions, metrics.clicks, ' +
+      'metrics.cost_micros, metrics.conversions, metrics.conversions_value ' +
+      'FROM shopping_performance_view ' +
+      'WHERE segments.date BETWEEN "' + range.start + '" AND "' + range.end + '"';
+
+    var acc = {};
+    try {
+      eachRow_(q, function (r) {
+        var v = r.segments[key];
+        addTo_(acc, [month, field, (v === undefined || v === null || v === '') ? '(not set)' : v].join('||'), r);
+      });
+    } catch (e) {
+      failures.push(field + ': ' + e.message);
+      continue;
+    }
+
+    // Top 25 values per dimension by conversion value — enough to judge whether a
+    // dimension is useful without flooding the tab.
+    var rows = topPerMonth_(acc, 3, 25);
+    // topPerMonth_ keys on month, so re-sort within this dimension.
+    out = out.concat(rows);
+  }
+
+  if (failures.length) Logger.log('Product dimension probe failures: ' + failures.join(' | '));
+  if (!out.length && failures.length) throw new Error(failures.join(' | '));
+  return out;
 }
 
 // ============================== REPORT: ITEM LEVEL =========================
@@ -600,7 +751,7 @@ function writeStatus_(ss, log, range, detailRange, accounts) {
   sheet.setColumnWidth(1, 140);
   sheet.setColumnWidth(3, 620);
 
-  var failed = log.filter(function (l) { return l[1] !== 'OK'; });
+  var failed = log.filter(function (l) { return l[1] !== 'OK' && l[1] !== 'INFO'; });
   if (failed.length) {
     sheet.getRange(6 + log.length + 2, 1).setValue(
       'A FAILED or PARTIAL row above almost always means a GAQL field name changed in a newer ' +

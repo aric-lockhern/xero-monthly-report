@@ -75,11 +75,11 @@ block explaining each one.
 | 5 Search / Shopping | Triple Whale + classification | automated |
 | 6 Search brand vs. non-brand | Triple Whale + classification | automated |
 | 7 Shopping brand vs. non-brand | Triple Whale + classification | automated |
-| 8 Product category | Google Ads `shopping_performance_view` | automated |
+| 8 Product category | Google Ads `shopping_performance_view` | automated — pick the two dimensions once, on the `Settings` tab |
 | 9 Brand impression share (ours) | Google Ads `search_impression_share` | automated |
 | 9 Auction insights (competitors) | — | **manual paste — no API exists** |
-| 10 PMax search categories | Google Ads `campaign_search_term_insight` | automated (no "search volume" — see GAPS) |
-| 11 Top products | Google Ads item-level | automated (imagery manual) |
+| 10 PMax search categories | `PMax Categories` paste, else Google Ads search-term insights | paste wins — the API resources are unreliable (GAPS §4) |
+| 11 Top products | Google Ads item-level | automated, images from your Shopping feed |
 | 12 Promotion recap | Triple Whale + Google Ads assets | automated (needs promo dates on the `Promos` tab) |
 | 13 ChatGPT Ads | Triple Whale `openai-ads` | automated |
 | 3/4–7/12 narrative bullets | you | manual, deliberately |
@@ -96,7 +96,7 @@ deck — it lists every gap, why it exists, and what it would take to close it.
 
 ## Pressure test before you deploy anything
 
-The ten `.gs` files are **one** Apps Script project — Apps Script shares a single
+The `.gs` files are **one** Apps Script project — Apps Script shares a single
 global scope, so the split is organisation only. Two deployments total, and
 `clasp` makes the first one command.
 
@@ -104,13 +104,16 @@ Start with zero Google setup at all:
 
 ```bash
 npm install
-# export the Triple Whale `_store` tab: File → Download → CSV
-mv ~/Downloads/*_store.csv tools/.store.csv
+npm run sample-store     # synthetic store — no client data, no Google account
 npm test
 ```
 
+To test against the real numbers instead, export the Triple Whale `_store` tab
+(File → Download → CSV) to `tools/.store.csv` and re-run `npm test`. Real exports
+are gitignored.
+
 ```
-✓ all 102 invariants hold.
+✓ all 166 invariants hold.
 ```
 
 `tools/harness.js` loads the real `apps-script/*.gs` into a sandbox with the
@@ -119,11 +122,13 @@ invariants that `Diagnostics → Run self-test` runs in the live sheet — one
 definition of "correct" for both (`apps-script/SelfTest.gs`). Non-zero exit on
 failure, so it drops into CI as-is.
 
-The suite is non-vacuous: it was validated by injecting five real faults and
-confirming each is caught, including one — Performance Max folded into Search
-instead of Shopping — that keeps every arithmetic identity valid while silently
-moving six figures of spend between slides. See
-[`docs/DEPLOY.md`](docs/DEPLOY.md#after-any-code-change).
+The suite is non-vacuous: every check in it was validated by injecting the fault it
+is supposed to catch and confirming it fails. Two worth naming, because both leave
+the deck looking finished: Performance Max folded into Search instead of Shopping
+keeps every arithmetic identity valid while silently moving six figures of spend
+between slides; and slide 8's two columns headed for the dimensions currently
+configured rather than the ones actually queried puts real numbers under the wrong
+heading. See [`docs/DEPLOY.md`](docs/DEPLOY.md#after-any-code-change).
 
 ## Setup
 
@@ -173,6 +178,8 @@ apps-script/            bound to the reporting spreadsheet
   Classify.gs           campaign → tactic / brand, with manual overrides
   Report.gs             the Report tab; slides 3–7, 13, reconciliation
   ReportDetail.gs       slides 8–12; the manual-input tabs
+  ProductImages.gs      slide 11 imagery from the Shopping feed
+  Webhook.gs            receives the Microsoft Ads script's POST → _eng_bing
   Slides.gs             fills a copy of the deck from the named ranges
   SelfTest.gs           the invariants — runs live AND in the local harness
   Diagnostics.gs        read-only inspections
@@ -182,8 +189,13 @@ apps-script/            bound to the reporting spreadsheet
 google-ads-script/
   engine-report.js      MCC-level Google Ads Script → _eng_* tabs
 
+microsoft-ads-script/
+  engine-report-bing.js Microsoft Advertising Script → POSTs to the Web App
+
 tools/
   harness.js            run the report locally, no Google account needed
+  make-sample-store.js  synthetic Triple Whale store, so npm test needs no export
+  bundle.js             writes dist/Code.gs + dist/appsscript.json
   fixtures/             synthetic engine data — also the _eng_* tab contract
 
 template/

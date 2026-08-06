@@ -127,9 +127,27 @@ Deck group `SEARCH` / `SHOPPING`.
 `RPT_SEARCH_BRAND`, `RPT_SEARCH_NONBRAND`, `RPT_SHOP_BRAND`, `RPT_SHOP_NONBRAND`.
 
 ### Slide 8 — Product category (`RPT_PRODUCT`)
-`_eng_product` ← `shopping_performance_view`, segmented by
-`segments.product_type_l1` / `_l2`. Top 16 sub-categories by conversion value.
-`Avg. CPC` = `Σ cost ÷ Σ clicks`; `ROAS` = `Σ conv_value ÷ Σ cost`.
+`_eng_product` ← `shopping_performance_view`, segmented by two **configurable**
+product dimensions. Top 16 combinations by conversion value. `Avg. CPC` =
+`Σ cost ÷ Σ clicks`; `ROAS` = `Σ conv_value ÷ Σ cost`.
+
+Which two is a property of **your Shopping feed**, not of Google: custom labels are
+free text the feed sets, so whether "Custom label 1" holds a category or the single
+word `shoes` depends on how the feed was built. Set `PRODUCT_DIM_1` /
+`PRODUCT_DIM_2` on the **`Settings` tab** — the Google Ads Script reads those same
+cells, so one edit changes both sides and there is no code to touch. Then re-run
+the MCC script and rebuild.
+
+`Diagnostics → Show product dimensions` prints what every dimension actually
+contains, with spend, and recommends a pair. It reads `_eng_product_dims`, which the
+MCC script writes by probing each dimension with its own query (segmenting by
+several at once reports the cross-product, not each dimension's own totals).
+
+The two columns are **headed for what the tab holds**, from its `dim1_field` /
+`dim2_field` columns — not for what `Settings` currently says. Between changing the
+setting and the next MCC run those differ, and the block's note states the
+disagreement. Labelling real numbers with a dimension they don't describe is the one
+slide-8 failure that looks like success.
 
 ### Slide 9 — Impression share (`RPT_BRAND_IS`, `RPT_AUCTION`)
 Ours: `metrics.search_impression_share` on brand-search campaigns, by day.
@@ -143,9 +161,23 @@ separately for those two channel types.
 Competitors: manual paste. GAPS §1.
 
 ### Slide 10 — PMax search categories (`RPT_PMAX_CAT`)
-`_eng_pmax_cat` ← `campaign_search_term_insight.category_label`, aggregated across
-PMax campaigns, sorted by conversions. `CTR` = `clicks ÷ impressions`;
-`Conv. Rate` = `conversions ÷ clicks`. `Search Volume` is `n/a` — GAPS §4.
+Two sources, and the **manual one wins**:
+
+1. **`PMax Categories`** tab — a paste of Google Ads → Campaigns → Insights →
+   *Search terms insights* → **Download**. Column names are matched loosely, so the
+   export's own headers work as-is; only a "Search category" column is required, and
+   a row with no `Month` counts as the report month. Numbers are parsed tolerantly
+   (`1,234`, `$1,234.56`, `12%`), because `Number('1,234')` is `NaN` and one `NaN`
+   summed into a column is a wrong slide with nothing visibly broken.
+2. **`_eng_pmax_cat`** ← `customer_search_term_insight` / `campaign_search_term_insight`,
+   aggregated across PMax campaigns.
+
+A paste takes priority: the API resources are inconsistently available (GAPS §4), so
+the automated tab can be empty with nothing wrong at your end — and if you pasted
+it, you looked at it. The block's note always says which source it used.
+
+`CTR` = `clicks ÷ impressions`; `Conv. Rate` = `conversions ÷ clicks`.
+`Search Volume` is a bucketed range and passes through as text — GAPS §4.
 
 ### Slide 11 — Top products (`RPT_TOP_ITEMS`)
 `_eng_item` ← `shopping_performance_view` by `segments.product_item_id` /

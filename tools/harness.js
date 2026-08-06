@@ -297,7 +297,24 @@ sheets['Settings'] = mockSheet('Settings', [
   ['CVR_BASIS', 'clicks', ''],
   ['TW_SESSION_FIELD', '', ''],
   ['PRODUCT_FEED_URL', '', ''],
+  // Written the way a person would type it, not as the API field, so the tolerant
+  // resolver is exercised rather than the exact-match path.
+  ['PRODUCT_DIM_1', 'Custom label 2', ''],
+  ['PRODUCT_DIM_2', 'l1', ''],
   ['BOGUS_KEY', 'ignored', ''],
+]);
+
+// Slide 10's manual paste, headed the way a Google Ads export is — NOT the way the
+// tab is seeded. That is the case worth testing: the loose column matching is the
+// whole reason a paste works, so a fixture using our own headers would prove
+// nothing. Two rows plus the seeded placeholder, which must be skipped.
+sheets['PMax Categories'] = mockSheet('PMax Categories', [
+  ['Month', 'Search category', 'Search volume', 'Impr.', 'Clicks', 'Cost', 'Conv.', 'Conv. value'],
+  ['', 'Paste your search terms insights export here →', '', '', '', '', '', ''],
+  ['', 'barefoot running shoes', '10K-100K', '48,200', '1,910', '$2,410.55', '61', '$7,880'],
+  ['', 'minimalist sandals', '1K-10K', '12,050', '402', '$610.20', '14', '$1,940'],
+  // A row for a different month, which must be filtered out rather than summed in.
+  ['1999-01', 'ancient history', '', '999', '99', '$9', '9', '$99'],
 ]);
 
 // Product Images, so slide 11's image resolution is exercised. Deliberately
@@ -356,6 +373,14 @@ if (ARGS.engine) {
     // engine tabs. `_comment` holds an array of strings, so an Array.isArray
     // test is not enough to tell them apart.
     if (tab.charAt(0) === '_' && tab.indexOf('_eng') !== 0) return;
+    // Belt and braces: a documentation key that happens to start with `_eng` would
+    // otherwise be loaded as a tab and crash inside substituteMonth, which is a
+    // confusing way to learn you named a comment badly.
+    const shape = fixtures[tab];
+    if (Array.isArray(shape) && shape.length && !Array.isArray(shape[0])) {
+      die(`fixture key "${tab}" looks like a comment (array of strings) but is named as an engine ` +
+          `tab. Rename it to start with "_comment".`);
+    }
     let grid = fixtures[tab];
     // A `_generate` block expands to daily rows, so the fixture file stays short
     // and its dates track the month under test.
@@ -507,9 +532,31 @@ const imgChecks = vm.runInContext(`(function () {
   };
 })()`, context);
 
-if (!ARGS.quiet) {
-  console.log('\nPRODUCT IMAGES (slide 11 resolution)');
-  const expect = {
+/**
+ * Assert, print, and fail the process — ALWAYS evaluated, printed in full only
+ * when verbose.
+ *
+ * The distinction matters: these checks used to live inside `if (!ARGS.quiet)`,
+ * which meant `npm test` — the quiet one, the one CI runs — skipped them entirely.
+ * A test that only runs when a human is watching is not a test. Failures print
+ * either way.
+ */
+const harnessFailures = [];
+function expectEq(section, name, got, want) {
+  const ok = got === want;
+  if (!ok) {
+    process.exitCode = 1;
+    harnessFailures.push(`${section} · ${name}  →  got ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`);
+  }
+  if (!ARGS.quiet) {
+    console.log(`  ${ok ? '✓' : '✗'} ${name}${ok ? '' : `  got ${JSON.stringify(got)} expected ${JSON.stringify(want)}`}`);
+  }
+  return ok;
+}
+
+if (!ARGS.quiet) console.log('\nPRODUCT IMAGES (slide 11 resolution)');
+{
+  const want = {
     count: 2,
     byId: 'https://example.com/prio-neo.jpg',
     byIdCaseInsensitive: 'https://example.com/prio-neo.jpg',
@@ -518,11 +565,146 @@ if (!ARGS.quiet) {
     blankUrlRowIgnored: '',
     unknown: '',
   };
-  Object.keys(expect).forEach(k => {
-    const ok = imgChecks[k] === expect[k];
-    if (!ok) process.exitCode = 1;
-    console.log(`  ${ok ? '✓' : '✗'} ${k}${ok ? '' : `  got "${imgChecks[k]}" expected "${expect[k]}"`}`);
+  Object.keys(want).forEach(k => expectEq('product images', k, imgChecks[k], want[k]));
+}
+
+// ---- slide 10's manual paste, and slide 8's dimension resolution ----
+const pmax = vm.runInContext(
+  `readPmaxManual_(__ctx.periods.current.month)`, context);
+const dimChecks = vm.runInContext(`(function () {
+  return {
+    dim1: PRODUCT_DIM_1.field, dim1Label: PRODUCT_DIM_1.label,
+    dim2: PRODUCT_DIM_2.field, dim2Label: PRODUCT_DIM_2.label,
+  };
+})()`, context);
+
+if (!ARGS.quiet) console.log('\nSLIDE 8 DIMENSIONS (resolved from the Settings tab)');
+// 'Custom label 2' and 'l1' as typed on the tab must land on the API fields — the
+// tolerant path, not the exact-match one.
+[['dim1', 'product_custom_attribute2'], ['dim1Label', 'Custom Label 2'],
+ ['dim2', 'product_type_l1'], ['dim2Label', 'Product Type 1']]
+  .forEach(([k, want]) => expectEq('slide 8 dimensions', k, dimChecks[k], want));
+
+// The engine fixture's `_eng_product` was written with attribute1 × attribute4,
+// while the Settings tab above asks for attribute2 × product_type_l1. That is the
+// real state between changing the setting and re-running the MCC script, and the
+// block must head its columns for the DATA and say the two disagree — labelling
+// real numbers with a dimension they don't describe is the one slide-8 failure
+// that looks like success.
+// Only meaningful with the engine fixtures loaded — with no `_eng_product` tab
+// there is no recorded dimension to prefer, and the correct behaviour is to fall
+// back to the configured labels.
+if (ARGS.engine) {
+  [
+    ['columns are headed for the data, not the config',
+      namedRanges['RPT_PRODUCT'] ? namedRanges['RPT_PRODUCT'].range.getValues()[0][0] : null,
+      'Custom Label 1'],
+    ['the disagreement is stated on the Report tab',
+      /These columns are headed for what the tab HOLDS/.test(reportText()), true],
+  ].forEach(([name, got, want]) => expectEq('slide 8 dimensions', name, got, want));
+} else {
+  expectEq('slide 8 dimensions', 'with no engine tab, the configured labels are used',
+    namedRanges['RPT_PRODUCT'] ? namedRanges['RPT_PRODUCT'].range.getValues()[0][0] : null,
+    'Custom Label 2');
+}
+
+if (!ARGS.quiet) console.log('\nSLIDE 10 MANUAL PASTE (loose column matching)');
+[
+  ['rows kept', pmax.rows.length, 2],
+  ['placeholder row skipped', pmax.rows.some(r => /Paste your/.test(r.category)), false],
+  ['other month filtered out', pmax.rows.some(r => r.category === 'ancient history'), false],
+  ['thousands separator parsed', pmax.rows[0] && pmax.rows[0].impressions, 48200],
+  ['currency parsed', pmax.rows[0] && pmax.rows[0].cost, 2410.55],
+  ['bucketed volume kept as text', pmax.rows[0] && pmax.rows[0].search_volume, '10K-100K'],
+  ['no columns went unmapped', pmax.unmapped.length, 0],
+  // The paste must WIN over the API tab, which the engine fixture also populates.
+  // Asserted through the note the block writes, because that note is what tells a
+  // reader which source the slide came from.
+  ['the paste reaches slide 10', /Pasted by hand/.test(reportText()), true],
+  ['the top category is the pasted one',
+    namedRanges['RPT_PMAX_CAT'] ? namedRanges['RPT_PMAX_CAT'].range.getValues()[1][0] : null,
+    'barefoot running shoes'],
+].forEach(([name, got, want]) => expectEq('slide 10 paste', name, got, want));
+
+// ---- the dimension-discovery diagnostic's recommendation ----
+//
+// The fixture mirrors the real US feed: custom label 1 is the single value "shoes"
+// for every product, and custom label 4 is female/male/unisex. Both are useless as
+// a slide-8 category, and recommending either is the mistake this diagnostic exists
+// to prevent — so assert what it recommends, not just that it runs.
+{
+  const advice = vm.runInContext(`(function () {
+    var said = [];
+    var realTell = tell_;
+    tell_ = function (title, body) { said.push(String(body)); };
+    try { diagProductDims(); } finally { tell_ = realTell; }
+    return said.join('\\n');
+  })()`, context);
+
+  if (!ARGS.quiet) console.log('\nDIMENSION DIAGNOSTIC (slide 8 recommendation)');
+  // With no engine fixtures there is no `_eng_product_dims` tab, and the only
+  // correct behaviour is to say so and name the script that writes it.
+  (ARGS.engine ? [
+    ['recommends product_type_l1 first', /SUGGESTED:\s+PRODUCT_DIM_1 = product_type_l1/.test(advice), true],
+    ['recommends product_type_l2 second', /PRODUCT_DIM_2 = product_type_l2/.test(advice), true],
+    // A single-value dimension splits nothing — the deck would get a one-row table.
+    ['flags the single-value label as unusable',
+      /product_custom_attribute1\s+1 value\(s\).*← not usable/.test(advice), true],
+    ['flags the all-brand dimension as unusable',
+      /product_brand\s+1 value\(s\).*← not usable/.test(advice), true],
+    // Mostly-blank is the other failure mode, and it must be reported as coverage
+    // rather than silently ranked on its populated slice alone.
+    ['reports low coverage on the sparse label',
+      /product_custom_attribute0\s+1 value\(s\), 9% of spend populated/.test(advice), true],
+    ['shows values with spend so the ranking can be overruled',
+      /female\s+—\s+\$16,800 cost/.test(advice), true],
+    ['tells you where to change it',
+      /Set them on the Settings tab/.test(advice), true],
+  ] : [
+    ['says the tab is missing rather than recommending blindly',
+      /is empty or absent/.test(advice), true],
+    ['names the script that writes it',
+      /engine-report\.js/.test(advice), true],
+  ]).forEach(([name, got, want]) => expectEq('dimension diagnostic', name, got, want));
+}
+
+// ---- the two dimension resolvers, one per runtime, must agree ----
+//
+// Apps Script and Google Ads Scripts are separate runtimes with no module system
+// between them, so resolveProductDim_() and resolveDimField_() are duplicated. A
+// field one accepts and the other rejects means the Ads script queries one
+// dimension while the deck labels another — real data under the wrong heading,
+// which is the one slide-8 failure nobody would notice. Check them against each
+// other here, where both files are readable.
+{
+  const adsSrc = fs.readFileSync(path.join(__dirname, '..', 'google-ads-script', 'engine-report.js'), 'utf8');
+  const adsCtx = vm.createContext({ CONFIG: {}, Logger: { log() {} } });
+  const fn = adsSrc.match(/function resolveDimField_[\s\S]*?\n}/);
+  if (!fn) die('could not find resolveDimField_ in engine-report.js');
+  vm.runInContext(fn[0], adsCtx);
+
+  const vocab = vm.runInContext('PRODUCT_DIM_VOCAB.map(function (v) { return v; })', context);
+  const inputs = [];
+  vocab.forEach(([field, label]) => inputs.push(field, label));
+  inputs.push('cl4', 'l2', 'Custom label 1', 'brand', 'pt3', 'shoes', 'cl5', '');
+
+  const disagree = [];
+  inputs.forEach(input => {
+    const mine = vm.runInContext(`(resolveProductDim_(${JSON.stringify(input)}) || {}).field || null`, context);
+    const theirs = vm.runInContext(`resolveDimField_(${JSON.stringify(input)})`, adsCtx);
+    if (mine !== theirs) disagree.push(`"${input}": Apps Script → ${mine}, Ads script → ${theirs}`);
   });
+
+  if (!ARGS.quiet) console.log('\nDIMENSION RESOLVERS AGREE ACROSS RUNTIMES');
+  if (disagree.length) {
+    process.exitCode = 1;
+    disagree.forEach(d => harnessFailures.push(
+      'dimension resolvers · ' + d +
+      '  → the Ads script would query a different dimension than the deck labels'));
+    if (!ARGS.quiet) disagree.forEach(d => console.log('  ✗ ' + d));
+  } else if (!ARGS.quiet) {
+    console.log(`  ✓ ${inputs.length} inputs resolve identically in both`);
+  }
 }
 
 // ---- the same invariants the live sheet checks ----
@@ -548,7 +730,21 @@ try {
 }
 report.lines.forEach(l => console.log(l));
 
-process.exit((report.failed || apiViolations.length) ? 1 : 0);
+// Harness-only checks (the things SelfTest.gs cannot see: image resolution, loose
+// paste parsing against a real export's headers, and the two runtimes' resolvers).
+// Printed even in quiet mode when they fail, or the quiet run reports success while
+// something is broken.
+if (harnessFailures.length) {
+  console.log('\n' + HR);
+  console.log('HARNESS CHECKS  (' + harnessFailures.length + ' failed)');
+  console.log(HR);
+  harnessFailures.forEach(f => console.log(wrap('  ✗ ', f)));
+} else {
+  console.log(`\n✓ harness checks: product images, slide 8 dimensions, slide 10 paste, ` +
+    `cross-runtime resolvers.`);
+}
+
+process.exit((report.failed || apiViolations.length || harnessFailures.length) ? 1 : 0);
 
 // ============================== OUTPUT HELPERS ============================
 
@@ -585,6 +781,16 @@ function dumpBlock(name) {
   console.log(`\n[${name}]  ${v.length}×${v[0].length}`);
   const w = v[0].length > 9 ? 13 : 20;
   v.forEach(row => console.log('  ' + row.map(c => cell(c, w)).join('')));
+}
+
+/**
+ * The whole Report tab as one string. Each block writes an explanatory note into
+ * column A above itself, and those notes are how a reader learns WHICH source a
+ * slide came from — so they are worth asserting on, not just the numbers.
+ */
+function reportText() {
+  const sheet = sheets['Report'];
+  return sheet ? sheet._data.map(r => r.join(' ')).join('\n') : '';
 }
 
 function dumpCampaignMap() {
