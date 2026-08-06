@@ -1,0 +1,23 @@
+{
+  "name": "xero-monthly-report",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Builds the Xero Shoes monthly paid-media review deck from Triple Whale and Google Ads",
+  "scripts": {
+    "test": "node tools/harness.js --store ${STORE:-tools/.store.csv} --engine --quiet",
+    "test:verbose": "node tools/harness.js --store ${STORE:-tools/.store.csv} --engine",
+    "test:bare": "node tools/harness.js --store ${STORE:-tools/.store.csv} --quiet",
+    "test:eu": "node tools/harness.js --store ${STORE:-tools/.store-eu.csv} --region EU --engine --quiet",
+    "check": "for f in apps-script/*.gs; do cp \"$f\" \"/tmp/$(basename $f .gs).js\" && node --check \"/tmp/$(basename $f .gs).js\" || exit 1; done && node --check google-ads-script/engine-report.js && node --check tools/harness.js && echo 'syntax OK'",
+    "push": "clasp push --force",
+    "pull": "clasp pull",
+    "open": "clasp open",
+    "logs": "clasp logs --watch"
+  },
+  "devDependencies": {
+    "@google/clasp": "^2.4.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

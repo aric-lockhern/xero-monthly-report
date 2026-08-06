@@ -1,0 +1,117 @@
+{
+  "_comment": [
+    "Synthetic Google Ads engine data for tools/harness.js. Lets you exercise",
+    "slides 8-12 and the engine-only YoY fallback without deploying the MCC",
+    "script or touching a real account.",
+    "",
+    "The shape of every tab here IS the contract engine-report.js must write.",
+    "If you change a column name in one, change it in the other.",
+    "",
+    "In _eng_day, `_generate` expands to daily rows. Month offsets are relative",
+    "to the month under test: 0 = report month, -1 = prior, -12 = year-ago.",
+    "The -12 entry is the important one — the Triple Whale store does not reach",
+    "back that far, so it exercises the path where %YoY engine columns are real",
+    "while the Triple Whale columns must read n/a.",
+    "",
+    "{ \"scale\": N } is multiplied by the month's factor, so year-ago numbers",
+    "come out proportionally smaller and the deltas are non-trivial.",
+    "",
+    "Campaign names deliberately mirror the real US account so the classifier is",
+    "tested against naming it will actually meet."
+  ],
+
+  "_eng_day": {
+    "header": ["date", "channel", "account", "campaign_id", "campaign", "channel_type",
+               "channel_sub_type", "impressions", "clicks", "cost", "conversions",
+               "conversions_value", "search_impression_share"],
+    "_generate": {
+      "months": [[0, 1.0], [-1, 0.92], [-12, 0.68]],
+      "days": 28,
+      "rows": [
+        ["$DATE", "google-ads", "Xero US", "1", "LD - Brand - Core", "SEARCH", "STANDARD",
+         {"scale": 11200}, {"scale": 2700}, {"scale": 2100}, {"scale": 186}, {"scale": 24700}, 0.63],
+        ["$DATE", "google-ads", "Xero US", "2", "LD - Shoes - NB", "SEARCH", "STANDARD",
+         {"scale": 9200}, {"scale": 430}, {"scale": 820}, {"scale": 17}, {"scale": 2100}, 0.21],
+        ["$DATE", "google-ads", "Xero US", "3", "LD - Standard Shopping - BR", "SHOPPING",
+         "SHOPPING_PRODUCT_ADS",
+         {"scale": 186000}, {"scale": 2100}, {"scale": 2700}, {"scale": 114}, {"scale": 13600}, 0.44],
+        ["$DATE", "google-ads", "Xero US", "4", "LD - PMAX - Top Products - NB - Performance",
+         "PERFORMANCE_MAX", "",
+         {"scale": 61000}, {"scale": 1150}, {"scale": 1100}, {"scale": 41}, {"scale": 4900}, ""]
+      ]
+    }
+  },
+
+  "_eng_product": [
+    ["month", "product_type_l1", "product_type_l2", "impressions", "clicks", "cost",
+     "conversions", "conversions_value"],
+    ["$REPORT_MONTH", "Shoes", "Trail Running", 1420000, 19100, 24200, 610, 84100],
+    ["$REPORT_MONTH", "Shoes", "Everyday", 1180000, 16200, 19800, 465, 61200],
+    ["$REPORT_MONTH", "Shoes", "Water", 340000, 4900, 5600, 141, 17800],
+    ["$REPORT_MONTH", "Sandals", "Z-Trail", 450000, 6400, 7100, 190, 24900],
+    ["$REPORT_MONTH", "Sandals", "Genesis", 210000, 2900, 3200, 78, 9600],
+    ["$REPORT_MONTH", "Boots", "Insulated", 96000, 1250, 1800, 34, 5100],
+    ["$REPORT_MONTH", "Accessories", "Insoles", 61000, 900, 700, 41, 2100]
+  ],
+
+  "_eng_pmax_cat": [
+    ["month", "campaign_id", "campaign", "category", "impressions", "clicks", "cost",
+     "conversions", "conversions_value"],
+    ["$REPORT_MONTH", "4", "LD - PMAX - Top Products - NB - Performance", "xero shoes",
+     152000, 14100, 0, 480, 65400],
+    ["$REPORT_MONTH", "4", "LD - PMAX - Top Products - NB - Performance", "barefoot shoes",
+     131000, 8900, 0, 164, 21900],
+    ["$REPORT_MONTH", "5", "LD - PMAX - All Products - NB - Performance", "barefoot shoes",
+     42000, 2700, 0, 51, 6100],
+    ["$REPORT_MONTH", "4", "LD - PMAX - Top Products - NB - Performance", "trail running shoes",
+     88000, 3900, 0, 90, 12200],
+    ["$REPORT_MONTH", "5", "LD - PMAX - All Products - NB - Performance", "minimalist sandals",
+     34000, 1400, 0, 38, 4700],
+    ["$REPORT_MONTH", "4", "LD - PMAX - Top Products - NB - Performance", "wide toe box shoes",
+     29000, 1100, 0, 24, 3300]
+  ],
+
+  "_eng_item": [
+    ["month", "item_id", "title", "impressions", "clicks", "cost", "conversions",
+     "conversions_value"],
+    ["$REPORT_MONTH", "XS-PRIO-NEO-M", "Prio Neo Mens Barefoot Shoe", 288000, 6100, 8100, 195, 27400],
+    ["$REPORT_MONTH", "XS-ZTRL-EV-W", "Z-Trail EV Womens Sandal", 161000, 3500, 4200, 130, 18600],
+    ["$REPORT_MONTH", "XS-HFS-II-M", "HFS II Mens Running Shoe", 144000, 3100, 3700, 108, 15900],
+    ["$REPORT_MONTH", "XS-MESA-TR-W", "Mesa Trail II Womens", 121000, 2400, 2900, 84, 11700],
+    ["$REPORT_MONTH", "XS-GEN-U", "Genesis Sandal Unisex", 88000, 1700, 1900, 61, 7800],
+    ["$REPORT_MONTH", "XS-XCURSION-M", "Xcursion Fusion Mens Boot", 44000, 900, 1400, 26, 4900]
+  ],
+
+  "_eng_asset": {
+    "header": ["date", "campaign", "asset_type", "asset_text", "impressions", "clicks",
+               "cost", "conversions", "conversions_value"],
+    "_generate": {
+      "months": [[0, 1.0]],
+      "days": 12,
+      "rows": [
+        ["$DATE", "LD - Brand - Core", "SITELINK", "Summer Sale - 25% Off",
+         {"scale": 9000}, {"scale": 420}, {"scale": 310}, {"scale": 14}, {"scale": 1900}],
+        ["$DATE", "LD - Brand - Core", "SITELINK", "Shop Best Sellers",
+         {"scale": 6000}, {"scale": 240}, {"scale": 190}, {"scale": 7}, {"scale": 940}],
+        ["$DATE", "LD - Brand - Core", "SITELINK", "Find Your Fit",
+         {"scale": 3000}, {"scale": 110}, {"scale": 80}, {"scale": 2}, {"scale": 260}],
+        ["$DATE", "LD - Shoes - NB", "SITELINK", "New Arrivals",
+         {"scale": 2200}, {"scale": 90}, {"scale": 120}, {"scale": 1}, {"scale": 140}]
+      ]
+    }
+  },
+
+  "Auction Insights": [
+    ["Month", "Domain", "Impr. Share", "Overlap Rate", "Position Above Rate",
+     "Top of Page Rate", "Outranking Share"],
+    ["$REPORT_MONTH", "xeroshoes.com", "82.4%", "--", "--", "96.1%", "--"],
+    ["$REPORT_MONTH", "vivobarefoot.com", "14.2%", "31.5%", "22.1%", "78.0%", "9.4%"],
+    ["$REPORT_MONTH", "merrell.com", "< 10%", "18.2%", "15.0%", "71.3%", "6.1%"],
+    ["$REPORT_MONTH", "altrarunning.com", "< 10%", "11.4%", "9.2%", "68.5%", "4.3%"]
+  ],
+
+  "Promos": [
+    ["Promo Name", "Start", "End", "Notes"],
+    ["Summer Sale", "$REPORT_MONTH-04", "$REPORT_MONTH-08", "25% off sitewide — sample promo window"]
+  ]
+}

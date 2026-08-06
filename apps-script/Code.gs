@@ -46,7 +46,9 @@ function onOpen() {
       .addItem('Show classification summary', 'diagClassification')
       .addItem('List unclassified campaigns', 'diagUnclassified')
       .addItem('Validate the deck template', 'diagValidateDeck')
-      .addItem('List Report tab named ranges', 'diagNamedRanges'))
+      .addItem('List Report tab named ranges', 'diagNamedRanges')
+      .addSeparator()
+      .addItem('Run self-test', 'runSelfTest'))
     .addToUi();
 }
 

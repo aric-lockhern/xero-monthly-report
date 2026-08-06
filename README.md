@@ -94,19 +94,57 @@ deck — it lists every gap, why it exists, and what it would take to close it.
 
 ---
 
+## Pressure test before you deploy anything
+
+The ten `.gs` files are **one** Apps Script project — Apps Script shares a single
+global scope, so the split is organisation only. Two deployments total, and
+`clasp` makes the first one command.
+
+Start with zero Google setup at all:
+
+```bash
+npm install
+# export the Triple Whale `_store` tab: File → Download → CSV
+mv ~/Downloads/*_store.csv tools/.store.csv
+npm test
+```
+
+```
+✓ all 102 invariants hold.
+```
+
+`tools/harness.js` loads the real `apps-script/*.gs` into a sandbox with the
+Google globals stubbed, builds the entire report in memory, and runs the same
+invariants that `Diagnostics → Run self-test` runs in the live sheet — one
+definition of "correct" for both (`apps-script/SelfTest.gs`). Non-zero exit on
+failure, so it drops into CI as-is.
+
+The suite is non-vacuous: it was validated by injecting five real faults and
+confirming each is caught, including one — Performance Max folded into Search
+instead of Shopping — that keeps every arithmetic identity valid while silently
+moving six figures of spend between slides. See
+[`docs/DEPLOY.md`](docs/DEPLOY.md#after-any-code-change).
+
 ## Setup
 
-Full walkthrough: [`docs/SETUP.md`](docs/SETUP.md). The short version:
+Staged go-live ladder: [`docs/DEPLOY.md`](docs/DEPLOY.md). Reference detail:
+[`docs/SETUP.md`](docs/SETUP.md). The short version:
 
-1. Create the reporting spreadsheet. Extensions → Apps Script, paste in
-   `apps-script/*.gs`.
-2. Fill in `Config.gs` — at minimum `TW_SPREADSHEET_ID` and `REGION`.
-3. `Monthly Report → Setup → First-run check`. It verifies every prerequisite and
+1. `npm test` locally (above) — no deploy needed.
+2. Create the reporting spreadsheet, `cp .clasp.json.example .clasp.json`, set the
+   Script ID, `npm run push`.
+3. Fill in `Config.gs` — at minimum `TW_SPREADSHEET_ID` and `REGION`.
+4. `Monthly Report → Setup → First-run check`. It verifies every prerequisite and
    tells you exactly what to fix.
-4. `Monthly Report → Build report`. Check the numbers and the Reconciliation block.
-5. Optional but recommended: convert the deck to Google Slides, set
+5. `Monthly Report → Build report`, then `Diagnostics → Run self-test`. Check the
+   Reconciliation block.
+6. Optional but recommended: convert the deck to Google Slides, set
    `DECK_TEMPLATE_ID`, install the MCC script, then
    `Automation → Set up / repair monthly run`.
+
+Nothing here writes to Google Ads or to the Triple Whale sheet, and the deck
+template is copied rather than modified — the realistic worst case is a wrong
+number in a draft deck.
 
 **One reporting sheet per region.** Deploy the project twice — once for US, once
 for EU — with different `REGION`, `TW_SPREADSHEET_ID` and `DECK_TEMPLATE_ID`.
@@ -129,6 +167,7 @@ apps-script/            bound to the reporting spreadsheet
   Report.gs             the Report tab; slides 3–7, 13, reconciliation
   ReportDetail.gs       slides 8–12; the manual-input tabs
   Slides.gs             fills a copy of the deck from the named ranges
+  SelfTest.gs           the invariants — runs live AND in the local harness
   Diagnostics.gs        read-only inspections
   Code.gs               menu, scheduled run, first-run check
   Util.gs               dates, the live _status log
@@ -136,11 +175,15 @@ apps-script/            bound to the reporting spreadsheet
 google-ads-script/
   engine-report.js      MCC-level Google Ads Script → _eng_* tabs
 
+tools/
+  harness.js            run the report locally, no Google account needed
+  fixtures/             synthetic engine data — also the _eng_* tab contract
+
 template/
   Xero_Shoes_Monthly_Reporting_Framework.pptx
 
 docs/
-  SETUP.md  DATA-DICTIONARY.md  MONTHLY-CHECKLIST.md  GAPS.md
+  DEPLOY.md  SETUP.md  DATA-DICTIONARY.md  MONTHLY-CHECKLIST.md  GAPS.md
 ```
 
 Related: [`ld-x-tw-script`](https://github.com/aric-lockhern/ld-x-tw-script) is

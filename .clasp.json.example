@@ -1,0 +1,17 @@
+{
+  "_comment": [
+    "Copy to .clasp.json (gitignored) and set scriptId.",
+    "",
+    "scriptId is in the Apps Script editor URL:",
+    "  script.google.com/home/projects/<SCRIPT_ID>/edit",
+    "or Project Settings -> IDs -> Script ID.",
+    "",
+    "rootDir must stay 'apps-script' — that folder holds the .gs files AND",
+    "appsscript.json, which clasp requires as the manifest.",
+    "",
+    "One .clasp.json per region. To run both, keep two files (.clasp.us.json,",
+    ".clasp.eu.json) and copy the one you want over .clasp.json before pushing."
+  ],
+  "scriptId": "PASTE_YOUR_SCRIPT_ID_HERE",
+  "rootDir": "apps-script"
+}
