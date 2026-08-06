@@ -66,8 +66,14 @@ function renderProductBlock_(w, ctx) {
   var month = ctx.periods.current.month;
   var raw = readEngineTab_(ENGINE_PRODUCT_SHEET).filter(function (r) { return monthOf_(r.month) === month; });
 
+  // The engine feed writes the two dimensions under fixed column names `dim1` and
+  // `dim2`, so changing PRODUCT_DIM_* needs no change here. Older tabs written
+  // before that used product_type_l1/l2 — read those as a fallback so an existing
+  // sheet keeps working until the Ads script next runs.
   var groups = groupEngine_(raw, function (r) {
-    return String(r.product_type_l1 || '(not set)') + '||' + String(r.product_type_l2 || '(not set)');
+    var d1 = r.dim1 !== undefined ? r.dim1 : r.product_type_l1;
+    var d2 = r.dim2 !== undefined ? r.dim2 : r.product_type_l2;
+    return String(d1 || '(not set)') + '||' + String(d2 || '(not set)');
   }).sort(byValueDesc_);
 
   var rows = groups.map(function (g) {
@@ -84,10 +90,11 @@ function renderProductBlock_(w, ctx) {
   w.block({
     name: 'RPT_PRODUCT', slide: '8', title: 'Product Category Performance',
     note: raw.length
-      ? 'Google Ads engine data, shopping_performance_view segmented by product type. Sorted by ' +
-        'conversion value, top ' + PRODUCT_ROWS + ' sub-categories.'
+      ? 'Google Ads engine data, shopping_performance_view segmented by ' + PRODUCT_DIM_1.label +
+        ' × ' + PRODUCT_DIM_2.label + ' (' + PRODUCT_DIM_1.field + ' / ' + PRODUCT_DIM_2.field +
+        '). Sorted by conversion value, top ' + PRODUCT_ROWS + ' rows.'
       : emptyNote_(ENGINE_PRODUCT_SHEET),
-    header: ['Product Type (1st)', 'Product Type (2nd)', 'Impr.', 'Clicks', 'Cost',
+    header: [PRODUCT_DIM_1.label, PRODUCT_DIM_2.label, 'Impr.', 'Clicks', 'Cost',
              'Avg. CPC', 'Conversions', 'Conv. Value', 'ROAS'],
     rows: padRows_(rows, PRODUCT_ROWS, 9),
     colFormats: [null, null, '#,##0', '#,##0', currencyFormat_(false),
@@ -219,9 +226,12 @@ function renderPmaxCategoryBlock_(w, ctx) {
   }).sort(byValueDesc_);
 
   var rows = groups.map(function (g) {
+    // Search volume is a bucketed RANGE in the UI ("10K-100K"), so it passes
+    // through as text when the API returns it and as n/a when it does not.
+    var vol = String((g.row && g.row.search_volume) || '').trim();
     return [
       g.key,
-      null,                                   // Search Volume — see note below
+      vol || null,
       g.conversions, g.clicks, g.impressions, g.conversions_value,
       div_(g.clicks, g.impressions),
       div_(g.conversions, g.clicks),
@@ -234,9 +244,10 @@ function renderPmaxCategoryBlock_(w, ctx) {
       ? 'Google Ads campaign_search_term_insight, aggregated across Performance Max campaigns and ' +
         'sorted by conversions. '
       : emptyNote_(ENGINE_PMAXCAT_SHEET) + ' ') +
-      'The deck\'s "Search Volume" column reads n/a on purpose: the search-term-insights API returns ' +
-      'impressions, clicks, conversions and conversion value, but not the bucketed search volume the ' +
-      'Google Ads UI shows. Use Impr. instead, or type the UI value in by hand.',
+      'Search Volume is a bucketed range in the Google Ads UI ("10K-100K"). The feed asks for it and ' +
+      'passes it through when the API returns it; where it reads n/a the API did not supply it, and ' +
+      'Impr. on the same row is the usable substitute. If this whole block is empty, the ' +
+      '_eng_status tab carries the exact error Google returned for each query shape tried.',
     header: ['Search Category', 'Search Volume', 'Conversions', 'Clicks', 'Impr.',
              'Conv. Value', 'CTR', 'Conv. Rate'],
     rows: padRows_(rows, PMAX_CAT_ROWS, 8),

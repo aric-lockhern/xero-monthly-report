@@ -85,18 +85,29 @@ specifically asks for GA4-consistent CVR.
 
 ---
 
-## 4. "Search Volume" on slide 10 — not in the API
+## 4. PMax search categories, and "Search Volume"
 
-`campaign_search_term_insight` returns impressions, clicks, conversions and
-conversion value per search category. It does **not** return the bucketed search
-volume the Google Ads UI displays.
+The Google Ads UI's **Search terms insights** panel is backed by
+`customer_search_term_insight` (account level, which is what the panel shows) and
+`campaign_search_term_insight` (per campaign, and selectable only while filtering
+to a single campaign id).
 
-**What happens now:** the column reads `n/a` and the block's note says why. Use
-`Impr.` — it's on the same table — or type the UI figure in by hand.
+These resources carry **undocumented constraints that the query builder does not
+catch** — which fields, segments and filters are legal has changed between API
+versions and differs between the two resources. A wrong combination returns an
+error, or worse, zero rows.
 
-Also note this resource must be queried **one campaign at a time** (it can't be
-scanned across an account), which is why the script lists PMax campaigns first and
-loops. And it reports no cost, which is why slide 10 has no spend column.
+So `fetchPmaxCategories_` does not commit to one guess. It walks candidate queries
+from richest to plainest — account level first, then per-campaign — and uses the
+first that returns rows. The query that worked is recorded in the tab's
+`source_query` column, and **every failure's exact error text lands on
+`_eng_status`**. When the block is empty you therefore learn why from Google's own
+words rather than guessing.
+
+**Search Volume** is a bucketed range in the UI ("10K-100K"), not a number. The
+feed asks for `metrics.search_volume` in its richest variant and passes the value
+through when the API supplies it; where the column reads `n/a` it did not, and
+`Impr.` on the same row is the usable substitute.
 
 ---
 
@@ -114,16 +125,37 @@ Slide 14 (Next Steps) is manual for the same reason.
 
 ---
 
-## 6. Imagery — manual
+## 6. Slide 11 product images — automated, from your FEED not Google Ads
 
-**Slide 11 product cards:** names, orders and revenue are filled from
-`RPT_TOP_ITEMS`. The image frames are not. Pull shots from the Shopping feed.
+**The Google Ads API exposes no product image URL and no product link, on any
+resource.** Confirmed by the Google Ads API team and still true.
+`shopping_performance_view` gives the item id and title and stops. So no GAQL
+query can ever return a photo.
 
-**Slide 12 promo screenshot:** the ad-unit screenshot placeholder is manual.
+The feed can. Set `PRODUCT_FEED_URL` on the `Settings` tab to your Merchant
+Center / Shopping feed and run `Setup → Refresh product images`. It parses a
+Google Shopping XML feed (`<g:id>` / `<g:image_link>`) or a TSV/CSV with `id` and
+`image_link` columns, and fills a `Product Images` tab. The Slides writer then
+inserts each image into slide 11's frames, fitted inside the frame preserving
+aspect ratio rather than stretched — product shots are near-square, the frames are
+portrait, and a distorted shoe on a client deck is worse than a slightly smaller
+one.
 
-Automating these would mean fetching product images from the Merchant Center feed
-and inserting them into Slides — possible, but a lot of machinery for a 30-second
-drag-and-drop.
+Matching is by **item id first, then exact title**, because which of the two the
+engine feed carries depends on the account's feed setup.
+
+**A product with no match keeps its "Product Image" placeholder.** That is
+deliberate: a visible gap is obvious and fixable in ten seconds, whereas the wrong
+photo beside a product name is not. `Setup → Product image status` lists this
+month's five products and ticks the ones that resolved.
+
+Rows you type by hand carry `source=manual` and **survive every refresh**, so a
+one-off override for a product the feed has no photo for is permanent.
+
+If the URL 404s or needs a login, that one image is skipped and named in `_status`;
+the rest of the deck is unaffected.
+
+**Still manual:** slide 12's ad-unit screenshot.
 
 ---
 

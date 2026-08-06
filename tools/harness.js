@@ -44,7 +44,7 @@ const SRC_DIR = path.join(__dirname, '..', 'apps-script');
 // Config first so its top-level vars exist; the rest share one global scope, as
 // they do in Apps Script itself.
 const LOAD_ORDER = ['Config', 'Settings', 'Metrics', 'Util', 'Ingest', 'Classify', 'Report',
-                    'ReportDetail', 'Slides', 'Webhook', 'Diagnostics', 'SelfTest', 'Code'];
+                    'ReportDetail', 'ProductImages', 'Slides', 'Webhook', 'Diagnostics', 'SelfTest', 'Code'];
 
 // ============================== ARGS ======================================
 
@@ -296,7 +296,17 @@ sheets['Settings'] = mockSheet('Settings', [
   ['REPORT_MONTH', ARGS.month, ''],
   ['CVR_BASIS', 'clicks', ''],
   ['TW_SESSION_FIELD', '', ''],
+  ['PRODUCT_FEED_URL', '', ''],
   ['BOGUS_KEY', 'ignored', ''],
+]);
+
+// Product Images, so slide 11's image resolution is exercised. Deliberately
+// mixed: one match by item id, one by title, one absent.
+sheets['Product Images'] = mockSheet('Product Images', [
+  ['item_id', 'title', 'image_url', 'source'],
+  ['XS-PRIO-NEO-M', '', 'https://example.com/prio-neo.jpg', 'feed'],
+  ['', 'Z-Trail EV Womens Sandal', 'https://example.com/ztrail.jpg', 'manual'],
+  ['XS-HFS-II-M', 'HFS II Mens Running Shoe', '', 'feed'],
 ]);
 
 const twStoreSheet = mockSheet('_store', loadStore(ARGS.store));
@@ -312,6 +322,10 @@ const SpreadsheetApp = {
 };
 
 const SlidesApp = { openById: () => { throw new Error('harness: Slides is not stubbed'); } };
+const XmlService = {
+  parse: () => { throw new Error('harness: XmlService is not stubbed'); },
+  getNamespace: (u) => ({ uri: u }),
+};
 const DriveApp = { getFileById: () => { throw new Error('harness: Drive is not stubbed'); } };
 const ScriptApp = { getProjectTriggers: () => [], newTrigger: () => { throw new Error('harness: no triggers'); } };
 const LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
@@ -474,6 +488,38 @@ if (!ARGS.quiet) {
   const want = ARGS.blocks || Object.keys(namedRanges).sort();
   want.forEach(dumpBlock);
   dumpCampaignMap();
+}
+
+// ---- product image resolution (slide 11) ----
+const imgChecks = vm.runInContext(`(function () {
+  var map = readProductImages_();
+  return {
+    count: map.count,
+    byId: productImageUrl_(map, 'XS-PRIO-NEO-M', 'whatever'),
+    byIdCaseInsensitive: productImageUrl_(map, 'xs-prio-neo-m', ''),
+    byTitle: productImageUrl_(map, 'NO-SUCH-ID', 'Z-Trail EV Womens Sandal'),
+    byTitleWhitespace: productImageUrl_(map, '', '  z-trail  ev   womens sandal '),
+    blankUrlRowIgnored: productImageUrl_(map, 'XS-HFS-II-M', 'HFS II Mens Running Shoe'),
+    unknown: productImageUrl_(map, 'NOPE', 'Nope'),
+  };
+})()`, context);
+
+if (!ARGS.quiet) {
+  console.log('\nPRODUCT IMAGES (slide 11 resolution)');
+  const expect = {
+    count: 2,
+    byId: 'https://example.com/prio-neo.jpg',
+    byIdCaseInsensitive: 'https://example.com/prio-neo.jpg',
+    byTitle: 'https://example.com/ztrail.jpg',
+    byTitleWhitespace: 'https://example.com/ztrail.jpg',
+    blankUrlRowIgnored: '',
+    unknown: '',
+  };
+  Object.keys(expect).forEach(k => {
+    const ok = imgChecks[k] === expect[k];
+    if (!ok) process.exitCode = 1;
+    console.log(`  ${ok ? '✓' : '✗'} ${k}${ok ? '' : `  got "${imgChecks[k]}" expected "${expect[k]}"`}`);
+  });
 }
 
 // ---- the same invariants the live sheet checks ----

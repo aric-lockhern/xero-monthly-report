@@ -71,6 +71,15 @@ var CONFIG = {
   // run. Must match ENGINE_MANUAL_SHEET in the Apps Script Config.gs.
   TAB_MANUAL_NEVER_WRITE: '_eng_manual',
 
+  // The two dimensions slide 8 breaks products down by. MUST match PRODUCT_DIM_1
+  // and PRODUCT_DIM_2 in the Apps Script Config.gs.
+  //
+  // Google's custom labels are zero-indexed in the API: the UI's "Custom label 1"
+  // is segments.product_custom_attribute1. Other options include product_type_l1
+  // ..l5, product_brand, product_condition, product_channel.
+  PRODUCT_DIM_1: 'product_custom_attribute1',
+  PRODUCT_DIM_2: 'product_custom_attribute4',
+
   // Rows to keep per detail report, per month, ordered by conversion value.
   TOP_PRODUCT_ROWS: 60,
   TOP_ITEM_ROWS:    40,
@@ -248,24 +257,37 @@ function fetchCampaignDays_(range, acc) {
 
 // ============================== REPORT: PRODUCT TAXONOMY ===================
 
-var HEADER_PRODUCT = ['month', 'product_type_l1', 'product_type_l2',
+// Column names are FIXED (`dim1`, `dim2`) even though the dimensions behind them
+// are configurable, so changing PRODUCT_DIM_* needs no change on the reading side.
+// The dimension actually used is recorded in `dim1_field` / `dim2_field` so the
+// tab is self-describing and a mismatch is visible rather than inferred.
+var HEADER_PRODUCT = ['month', 'dim1', 'dim2', 'dim1_field', 'dim2_field',
                       'impressions', 'clicks', 'cost', 'conversions', 'conversions_value'];
 
 function fetchProductTypes_(range) {
-  var q = 'SELECT segments.date, segments.product_type_l1, segments.product_type_l2, ' +
+  var f1 = CONFIG.PRODUCT_DIM_1, f2 = CONFIG.PRODUCT_DIM_2;
+  var q = 'SELECT segments.date, segments.' + f1 + ', segments.' + f2 + ', ' +
     'metrics.impressions, metrics.clicks, metrics.cost_micros, ' +
     'metrics.conversions, metrics.conversions_value ' +
     'FROM shopping_performance_view ' +
     'WHERE segments.date BETWEEN "' + range.start + '" AND "' + range.end + '"';
 
+  var k1 = camel_(f1), k2 = camel_(f2);
   var acc = {};
   eachRow_(q, function (r) {
     var month = String(r.segments.date).slice(0, 7);
-    var l1 = r.segments.productTypeL1 || '(not set)';
-    var l2 = r.segments.productTypeL2 || '(not set)';
-    addTo_(acc, [month, l1, l2].join('||'), r);
+    // A product with no value for a custom label comes back empty, not absent.
+    // '(not set)' keeps those rows visible instead of silently merging them.
+    var d1 = r.segments[k1] || '(not set)';
+    var d2 = r.segments[k2] || '(not set)';
+    addTo_(acc, [month, d1, d2, f1, f2].join('||'), r);
   });
-  return topPerMonth_(acc, 3, CONFIG.TOP_PRODUCT_ROWS);
+  return topPerMonth_(acc, 5, CONFIG.TOP_PRODUCT_ROWS);
+}
+
+/** snake_case GAQL field → the lowerCamelCase key AdsApp.search() returns. */
+function camel_(field) {
+  return String(field).replace(/_([a-z0-9])/g, function (m, c) { return c.toUpperCase(); });
 }
 
 // ============================== REPORT: ITEM LEVEL =========================
@@ -293,51 +315,150 @@ function fetchItems_(range) {
 
 // ============================== REPORT: PMAX SEARCH CATEGORIES =============
 
-var HEADER_PMAX_CAT = ['month', 'campaign_id', 'campaign', 'category',
-                       'impressions', 'clicks', 'cost', 'conversions', 'conversions_value'];
+var HEADER_PMAX_CAT = ['month', 'campaign_id', 'campaign', 'category', 'search_volume',
+                       'impressions', 'clicks', 'cost', 'conversions', 'conversions_value',
+                       'source_query'];
 
 /**
- * PMax search term insights.
+ * PMax / search-term-category insights — the data behind the Google Ads UI's
+ * "Search terms insights" panel.
  *
- * campaign_search_term_insight has to be queried ONE CAMPAIGN AT A TIME — the
- * resource cannot be scanned across an account — so we first list the PMax
- * campaigns, then query each. It also reports no cost, which is why slide 10 has
- * no spend column.
+ * WHY THIS TRIES SEVERAL QUERIES
+ * ---------------------------------------------------------------------------
+ * These resources carry undocumented constraints that are not caught by the query
+ * builder and only surface as runtime errors — which combination of fields,
+ * segments and filters is legal has changed between API versions, and
+ * `customer_search_term_insight` and `campaign_search_term_insight` do not accept
+ * the same ones.
+ *
+ * So rather than commit to one guess, this walks a list of candidate queries from
+ * richest to plainest and uses the first that returns rows. The query that worked
+ * is written into the `source_query` column, and every failure's exact error text
+ * lands on the `_eng_status` tab. When the tab is empty you therefore learn WHY
+ * from Google's own words instead of guessing.
+ *
+ * Account level first, because that is what the UI panel shows (and it needs one
+ * query rather than one per campaign). Campaign level is the fallback:
+ * `campaign_search_term_insight` may only be selected while filtering to a single
+ * campaign id, hence the loop.
  */
 function fetchPmaxCategories_(range) {
-  var campaigns = [];
-  eachRow_(
-    'SELECT campaign.id, campaign.name FROM campaign ' +
-    'WHERE campaign.advertising_channel_type = "PERFORMANCE_MAX" ' +
-    'AND campaign.status != "REMOVED"',
-    function (r) { campaigns.push({ id: String(r.campaign.id), name: r.campaign.name }); });
+  var month = range.end.slice(0, 7);
+  var attempts = [];
 
-  if (!campaigns.length) return [];
+  // ---- account level: one query, matches the UI's account-wide panel ----
+  var customerVariants = [
+    // Richest first. metrics.search_volume is what the UI shows as a bucketed
+    // range ("10K-100K"); if it is not selectable this variant fails and the next
+    // one drops it.
+    'SELECT customer_search_term_insight.category_label, customer_search_term_insight.id, ' +
+      'metrics.impressions, metrics.clicks, metrics.conversions, metrics.conversions_value, ' +
+      'metrics.search_volume FROM customer_search_term_insight ' +
+      'WHERE segments.date BETWEEN "@start" AND "@end"',
 
-  var acc = {}, failures = 0;
-  for (var i = 0; i < campaigns.length; i++) {
-    var c = campaigns[i];
-    var q = 'SELECT campaign_search_term_insight.category_label, ' +
+    'SELECT customer_search_term_insight.category_label, customer_search_term_insight.id, ' +
       'metrics.impressions, metrics.clicks, metrics.conversions, metrics.conversions_value ' +
-      'FROM campaign_search_term_insight ' +
-      'WHERE segments.date BETWEEN "' + range.start + '" AND "' + range.end + '" ' +
-      'AND campaign_search_term_insight.campaign_id = ' + c.id;
+      'FROM customer_search_term_insight WHERE segments.date BETWEEN "@start" AND "@end"',
+
+    // Some versions reject segments.date here and require a coarser segment.
+    'SELECT customer_search_term_insight.category_label, customer_search_term_insight.id, ' +
+      'metrics.impressions, metrics.clicks, metrics.conversions, metrics.conversions_value ' +
+      'FROM customer_search_term_insight WHERE segments.month BETWEEN "@monthStart" AND "@monthEnd"',
+  ];
+
+  for (var v = 0; v < customerVariants.length; v++) {
+    var q = fillQuery_(customerVariants[v], range);
+    var acc = {}, rows = 0;
     try {
-      // No date segment is selectable here, so the whole window collapses to one
-      // bucket. Stamp it with the window's END month, which is the report month.
-      var month = range.end.slice(0, 7);
       eachRow_(q, function (r) {
-        var label = r.campaignSearchTermInsight.categoryLabel || '(uncategorised)';
-        addTo_(acc, [month, c.id, c.name, label].join('||'), r);
+        var label = (r.customerSearchTermInsight && r.customerSearchTermInsight.categoryLabel) || '(uncategorised)';
+        addTo_(acc, [month, '', 'ALL CAMPAIGNS', label, searchVolumeOf_(r), 'customer_search_term_insight'].join('||'), r);
+        rows++;
       });
     } catch (e) {
-      failures++;
-      if (failures <= 3) Logger.log('PMax insight query failed for "' + c.name + '": ' + e.message);
+      attempts.push('customer_search_term_insight v' + (v + 1) + ': ' + e.message);
+      continue;
     }
+    if (rows) {
+      Logger.log('PMax categories: customer_search_term_insight variant ' + (v + 1) + ' returned ' + rows + ' rows');
+      return topPerMonth_(acc, 6, CONFIG.TOP_CATEGORY_ROWS);
+    }
+    attempts.push('customer_search_term_insight v' + (v + 1) + ': query ran but returned 0 rows');
   }
-  if (failures) Logger.log('PMax search categories: ' + failures + '/' + campaigns.length + ' campaigns failed.');
 
-  return topPerMonth_(acc, 4, CONFIG.TOP_CATEGORY_ROWS);
+  // ---- campaign level fallback, one query per PMax campaign ----
+  var campaigns = [];
+  try {
+    eachRow_('SELECT campaign.id, campaign.name FROM campaign ' +
+      'WHERE campaign.advertising_channel_type = "PERFORMANCE_MAX" AND campaign.status != "REMOVED"',
+      function (r) { campaigns.push({ id: String(r.campaign.id), name: r.campaign.name }); });
+  } catch (e) {
+    attempts.push('PMax campaign list: ' + e.message);
+  }
+
+  if (campaigns.length) {
+    var acc2 = {}, total = 0, failures = [];
+    for (var i = 0; i < campaigns.length; i++) {
+      var c = campaigns[i];
+      var cq = 'SELECT campaign_search_term_insight.category_label, campaign_search_term_insight.id, ' +
+        'campaign_search_term_insight.campaign_id, metrics.impressions, metrics.clicks, ' +
+        'metrics.conversions, metrics.conversions_value FROM campaign_search_term_insight ' +
+        'WHERE segments.date BETWEEN "' + range.start + '" AND "' + range.end + '" ' +
+        'AND campaign_search_term_insight.campaign_id = ' + c.id;
+      try {
+        eachRow_(cq, function (r) {
+          var label = (r.campaignSearchTermInsight && r.campaignSearchTermInsight.categoryLabel) || '(uncategorised)';
+          addTo_(acc2, [month, c.id, c.name, label, '', 'campaign_search_term_insight'].join('||'), r);
+          total++;
+        });
+      } catch (e2) {
+        if (failures.length < 3) failures.push(c.name + ': ' + e2.message);
+      }
+    }
+    if (failures.length) attempts.push('campaign_search_term_insight — ' + failures.join(' | '));
+    if (total) {
+      Logger.log('PMax categories: campaign_search_term_insight returned ' + total + ' rows across ' +
+        campaigns.length + ' campaign(s)');
+      return topPerMonth_(acc2, 6, CONFIG.TOP_CATEGORY_ROWS);
+    }
+    attempts.push('campaign_search_term_insight: ran across ' + campaigns.length +
+      ' PMax campaign(s) and returned 0 rows');
+  } else {
+    attempts.push('no PERFORMANCE_MAX campaigns found to query');
+  }
+
+  // Nothing worked. Throw so main() records this on _eng_status as FAILED and
+  // leaves any previous good data alone — with every error Google gave us, which
+  // is the only way to tell a permissions problem from a renamed field.
+  throw new Error('Search term category insights unavailable. Tried ' + attempts.length +
+    ' approach(es): ' + attempts.join('  ||  '));
+}
+
+/**
+ * The UI shows search volume as a bucketed RANGE ("10K-100K"), not a number.
+ * Whether any of that is selectable varies by API version, so read it defensively
+ * from whichever shape came back and fall back to blank.
+ */
+function searchVolumeOf_(r) {
+  var m = r.metrics || {};
+  if (m.searchVolume === undefined || m.searchVolume === null) return '';
+  var v = m.searchVolume;
+  // Could be a scalar or a {min,max} range object depending on version.
+  if (typeof v === 'object') {
+    var lo = v.lowerBound !== undefined ? v.lowerBound : v.min;
+    var hi = v.upperBound !== undefined ? v.upperBound : v.max;
+    if (lo === undefined && hi === undefined) return '';
+    return (lo === undefined ? '' : lo) + '-' + (hi === undefined ? '' : hi);
+  }
+  return v;
+}
+
+/** Substitute the date placeholders a candidate query uses. */
+function fillQuery_(template, range) {
+  return template
+    .replace('@start', range.start).replace('@end', range.end)
+    .replace('@monthStart', range.start.slice(0, 7) + '-01')
+    .replace('@monthEnd', range.end.slice(0, 7) + '-01');
 }
 
 // ============================== REPORT: ASSETS / SITELINKS =================

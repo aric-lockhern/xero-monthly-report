@@ -54,6 +54,9 @@ function settingsSpec_() {
     ['REPORT_MONTH', 'Report month (yyyy-MM)', function (v) { return /^\d{4}-\d{2}$/.test(v); },
      'Pin a specific month, e.g. 2026-07. Leave EMPTY for the last complete month, which is what a scheduled run wants.'],
 
+    ['PRODUCT_FEED_URL', 'Shopping feed URL (product images)', null,
+     'Your Merchant Center / Shopping feed — Google Shopping XML (<g:id>, <g:image_link>) or a TSV/CSV with id and image_link columns. Fills slide 11\'s product photos via Setup → Refresh product images. Must be publicly reachable. The Google Ads API exposes no product image URL, so this is the only automated source.'],
+
     ['CVR_BASIS', 'TW CVR basis', function (v) { return ['clicks', 'sessions'].indexOf(v.toLowerCase()) !== -1; },
      'clicks or sessions. sessions needs TW_SESSION_FIELD set and that column present in the Triple Whale store — see docs/GAPS.md §3.'],
 
@@ -99,6 +102,7 @@ function applySettings_() {
       case 'REPORT_MONTH':          REPORT_MONTH = value; break;
       case 'CVR_BASIS':             CVR_BASIS = value; break;
       case 'TW_SESSION_FIELD':      TW_SESSION_FIELD = value; break;
+      case 'PRODUCT_FEED_URL':      PRODUCT_FEED_URL = value; break;
       default: continue;
     }
     applied.push(key);
@@ -188,6 +192,7 @@ function defaultFor_(key) {
     case 'REPORT_MONTH':          return REPORT_MONTH;
     case 'CVR_BASIS':             return CVR_BASIS;
     case 'TW_SESSION_FIELD':      return TW_SESSION_FIELD;
+    case 'PRODUCT_FEED_URL':      return PRODUCT_FEED_URL;
     default: return '';
   }
 }

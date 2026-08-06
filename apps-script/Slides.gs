@@ -12,7 +12,11 @@
  *   · narrative bullets — the "[Headline #1 — …]" placeholders. Those are the
  *     analyst's job, and a generated sentence about "up 12% MoM" is exactly the
  *     filler a client notices.
- *   · slide 9's chart, and slide 11/12 imagery. See docs/GAPS.md.
+ *   · slide 9's chart, and slide 12's ad-unit screenshot. See docs/GAPS.md.
+ *
+ * Slide 11 product imagery IS filled, from the `Product Images` tab — the Google
+ * Ads API exposes no image URL, so those come from your Shopping feed. See
+ * ProductImages.gs.
  *
  * The deck is validated before anything is written: if a table's shape doesn't
  * match the block that feeds it, that table is SKIPPED and reported, rather than
@@ -116,7 +120,11 @@ function writeDeck_(ctx) {
   try { fillKpiCards_(slides, ctx, skipped); }
   catch (e) { skipped.push('slide 3 stat cards: ' + e.message); }
 
-  // ---- slide 11 product cards ----
+  // ---- slide 8 headers, which follow the configured product dimensions ----
+  try { fillProductHeaders_(slides, skipped); }
+  catch (e) { skipped.push('slide 8 headers: ' + e.message); }
+
+  // ---- slide 11 product cards, with imagery ----
   try { fillProductCards_(slides, skipped); }
   catch (e) { skipped.push('slide 11 product cards: ' + e.message); }
 
@@ -260,32 +268,114 @@ function fillProductCards_(slides, skipped) {
   if (!vals) { skipped.push('RPT_TOP_ITEMS named range is missing'); return; }
   var body = vals.slice(1);   // [ title, item_id, orders, revenue, cost, roas ]
 
-  var shapes = slides[10].getShapes();
-  var names = [], orders = [], revenue = [];
+  var slide = slides[10];
+  var shapes = slide.getShapes();
+  var names = [], orders = [], revenue = [], frames = [];
   for (var i = 0; i < shapes.length; i++) {
     var text;
     try { text = shapes[i].getText().asString().trim(); } catch (e) { continue; }
     if (/^\[Product Name \d+\]$/.test(text)) names.push(shapes[i]);
     else if (/^Orders\s+—$/.test(text))      orders.push(shapes[i]);
     else if (/^Revenue\s+\$—$/.test(text))   revenue.push(shapes[i]);
+    // The image placeholder reads "Product\nImage" in the template.
+    else if (/^Product\s+Image$/i.test(text.replace(/\s+/g, ' '))) frames.push(shapes[i]);
   }
 
   var byLeft = function (a, b) { return a.getLeft() - b.getLeft(); };
-  names.sort(byLeft); orders.sort(byLeft); revenue.sort(byLeft);
+  names.sort(byLeft); orders.sort(byLeft); revenue.sort(byLeft); frames.sort(byLeft);
 
   var n = Math.min(names.length, TOP_ITEM_ROWS, body.length);
   if (!n) { skipped.push('slide 11: no product-name placeholders found'); return; }
 
+  var imageMap = readProductImages_();
+  var imagesPlaced = 0, imagesMissing = [];
+
   for (var k = 0; k < n; k++) {
     var row = body[k] || [];
     var title = String(row[0] || '').trim();
+    var itemId = String(row[1] || '').trim();
+
     names[k].getText().setText(title || '—');
     if (orders[k])  orders[k].getText().setText('Orders  ' + (row[2] === '' ? NA : row[2]));
     if (revenue[k]) revenue[k].getText().setText('Revenue  ' + (row[3] === '' ? NA : row[3]));
+
+    if (!frames[k]) continue;
+    var url = productImageUrl_(imageMap, itemId, title);
+    if (!url) { imagesMissing.push(title || itemId); continue; }
+
+    // A frame that cannot be filled KEEPS its placeholder. Leaving a visible gap
+    // is right: a missing photo is obvious and fixable, whereas the wrong photo
+    // beside a product name is not.
+    if (insertProductImage_(slide, frames[k], url, skipped, title)) imagesPlaced++;
+    else imagesMissing.push(title || itemId);
   }
+
   if (names.length > n) {
     skipped.push('slide 11: ' + (names.length - n) + ' product card(s) left as placeholders — ' +
       'fewer products had revenue than the deck has cards. Delete the extra cards.');
   }
-  progress_('Slide 11: ' + n + ' product card(s) filled.');
+  if (imagesMissing.length) {
+    skipped.push('slide 11: no image for ' + imagesMissing.length + ' product(s) (' +
+      imagesMissing.slice(0, 3).join('; ') + (imagesMissing.length > 3 ? ' …' : '') +
+      ') — those frames keep their placeholder. Run Setup → Product image status to see why.');
+  }
+  progress_('Slide 11: ' + n + ' card(s) filled, ' + imagesPlaced + ' image(s) placed.');
+}
+
+/**
+ * Put one product image inside a placeholder frame, then remove the placeholder.
+ *
+ * The image is fitted INSIDE the frame preserving its aspect ratio and centred,
+ * rather than stretched to the frame's shape. Product shots are near-square and
+ * the frames are portrait, so stretching would visibly distort the shoe — which
+ * on a client deck is worse than a slightly smaller image.
+ */
+function insertProductImage_(slide, frame, url, skipped, label) {
+  var left = frame.getLeft(), top = frame.getTop();
+  var boxW = frame.getWidth(), boxH = frame.getHeight();
+
+  var image;
+  try {
+    image = slide.insertImage(url);
+  } catch (e) {
+    // A 404, a login-walled URL, or a format Slides refuses. Report and move on;
+    // one bad image must not abandon the rest of the deck.
+    skipped.push('slide 11: could not insert image for "' + (label || '?') + '" — ' + e.message +
+      ' (the URL must be publicly reachable)');
+    return false;
+  }
+
+  var natW = image.getWidth(), natH = image.getHeight();
+  var scale = (natW > 0 && natH > 0) ? Math.min(boxW / natW, boxH / natH) : 1;
+  var w = natW * scale, h = natH * scale;
+
+  image.setWidth(w).setHeight(h);
+  image.setLeft(left + (boxW - w) / 2).setTop(top + (boxH - h) / 2);
+
+  try { frame.remove(); } catch (e) { /* leave it behind the image if it won't delete */ }
+  return true;
+}
+
+/**
+ * Rewrite slide 8's first two header cells from PRODUCT_DIM_*.label.
+ *
+ * The table writer only fills DATA rows, so without this the deck would keep
+ * saying "Product Type (1st)" over columns that now hold Custom Label 1 — a
+ * mislabelled column being far worse than an empty one, because nothing looks
+ * wrong.
+ */
+function fillProductHeaders_(slides, skipped) {
+  if (slides.length < 8) return;
+  var tables = slides[7].getTables();
+  if (!tables.length) { skipped.push('slide 8: no table found to relabel'); return; }
+
+  var table = tables[0];
+  if (table.getNumColumns() < 2) return;
+  try {
+    table.getCell(0, 0).getText().setText(PRODUCT_DIM_1.label);
+    table.getCell(0, 1).getText().setText(PRODUCT_DIM_2.label);
+    progress_('Slide 8: headers set to ' + PRODUCT_DIM_1.label + ' / ' + PRODUCT_DIM_2.label + '.');
+  } catch (e) {
+    skipped.push('slide 8: could not relabel the first two headers — ' + e.message);
+  }
 }

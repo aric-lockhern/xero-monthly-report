@@ -28,7 +28,7 @@ const OUT = path.join(OUT_DIR, 'Code.gs');
 
 // Config first — everything else reads its constants at load time.
 const ORDER = ['Config', 'Settings', 'Metrics', 'Util', 'Ingest', 'Classify', 'Report',
-               'ReportDetail', 'Slides', 'Webhook', 'Diagnostics', 'SelfTest', 'Code'];
+               'ReportDetail', 'ProductImages', 'Slides', 'Webhook', 'Diagnostics', 'SelfTest', 'Code'];
 
 /** The load order must cover every .gs file, or the bundle silently omits one. */
 function verifyComplete() {

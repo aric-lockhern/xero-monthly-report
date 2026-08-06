@@ -95,6 +95,11 @@ var CVR_BASIS = 'clicks';
 // CVR falls back to clicks regardless of CVR_BASIS.
 var TW_SESSION_FIELD = '';
 
+// Shopping feed URL, used only to resolve slide 11's product images. Set it on
+// the Settings tab. The Google Ads API exposes no product image URL on any
+// resource, so the feed is the only automated source — see ProductImages.gs.
+var PRODUCT_FEED_URL = '';
+
 // ============================== CLASSIFICATION =============================
 // Campaign names are the only segmentation signal Triple Whale gives us, so
 // every campaign is classified by regex against its name. Rules are evaluated
@@ -167,6 +172,21 @@ var ENGINE_ASSET_SHEET   = '_eng_asset';     // sitelinks / assets     (slide 12
 // Row counts the deck's tables are built for. Changing these changes how many
 // rows the Report tab emits; the Slides writer trims the deck table to match.
 var PRODUCT_ROWS   = 16;   // slide 8  — top product sub-categories
+
+// The two dimensions slide 8 breaks product performance down by.
+//
+// Google's custom labels are ZERO-indexed in the API but ONE-indexed in the UI's
+// naming: the UI's "Custom label 1" is segments.product_custom_attribute1, and
+// "Custom label 0" is attribute0. So the numbers line up here — but if you ever
+// switch to label 0, remember the UI calls it "Custom label 0" too.
+//
+// Valid dimensions: custom_attribute0..4, product_type_l1..l5, product_brand,
+// product_condition, product_channel, product_item_id, product_title.
+// LABEL is what the deck's column header should read; the Slides writer rewrites
+// slide 8's first two header cells to match, so the deck can never disagree with
+// the data underneath it.
+var PRODUCT_DIM_1 = { field: 'product_custom_attribute1', label: 'Custom Label 1' };
+var PRODUCT_DIM_2 = { field: 'product_custom_attribute4', label: 'Custom Label 4' };
 var PMAX_CAT_ROWS  = 16;   // slide 10 — top PMax search categories
 var TOP_ITEM_ROWS  = 5;    // slide 11 — product cards
 var PROMO_ROWS     = 3;    // slide 12 — promo sitelinks (a Grand Total row is added)
