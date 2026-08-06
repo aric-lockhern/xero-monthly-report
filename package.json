@@ -12,7 +12,9 @@
     "push": "clasp push --force",
     "pull": "clasp pull",
     "open": "clasp open",
-    "logs": "clasp logs --watch"
+    "logs": "clasp logs --watch",
+    "bundle": "node tools/bundle.js",
+    "test:bundled": "node tools/bundle.js && node tools/harness.js --store ${STORE:-tools/.store.csv} --engine --bundled --quiet"
   },
   "devDependencies": {
     "@google/clasp": "^2.4.2"

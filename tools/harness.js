@@ -26,6 +26,9 @@
  *                      Defaults to tools/fixtures/engine-sample.json
  *   --blocks <a,b>     only print these named ranges (default: all)
  *   --quiet            self-test results only, no block dumps
+ *   --bundled          load dist/Code.gs instead of apps-script/*.gs, to verify
+ *                      the single-file build people actually paste into Apps
+ *                      Script behaves identically to the sources
  *
  * EXIT CODE is non-zero if any self-test invariant fails, so this drops into CI
  * or a pre-commit hook unchanged.
@@ -46,7 +49,7 @@ const LOAD_ORDER = ['Config', 'Metrics', 'Util', 'Ingest', 'Classify', 'Report',
 // ============================== ARGS ======================================
 
 function parseArgs(argv) {
-  const out = { region: 'US', month: '', store: '', engine: null, blocks: null, quiet: false };
+  const out = { region: 'US', month: '', store: '', engine: null, blocks: null, quiet: false, bundled: false };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     const next = () => {
@@ -61,6 +64,7 @@ function parseArgs(argv) {
       case '--region': out.region = next().toUpperCase(); break;
       case '--blocks': out.blocks = next().split(',').map(s => s.trim()); break;
       case '--quiet':  out.quiet = true; break;
+      case '--bundled': out.bundled = true; break;
       case '--engine':
         out.engine = (argv[i + 1] && !argv[i + 1].startsWith('--'))
           ? argv[++i]
@@ -343,11 +347,20 @@ function defaultMonth() {
 
 // ============================== LOAD + PATCH CONFIG =======================
 
-let source = LOAD_ORDER.map(f => {
-  const p = path.join(SRC_DIR, f + '.gs');
-  if (!fs.existsSync(p)) die(`missing source file ${p}`);
-  return `/* ===== ${f}.gs ===== */\n` + fs.readFileSync(p, 'utf8');
-}).join('\n;\n');
+let source;
+if (ARGS.bundled) {
+  // Verify the artifact that actually gets pasted into Apps Script, not just the
+  // sources it was built from.
+  const bundlePath = path.join(__dirname, '..', 'dist', 'Code.gs');
+  if (!fs.existsSync(bundlePath)) die('dist/Code.gs not found — run `node tools/bundle.js` first');
+  source = fs.readFileSync(bundlePath, 'utf8');
+} else {
+  source = LOAD_ORDER.map(f => {
+    const p = path.join(SRC_DIR, f + '.gs');
+    if (!fs.existsSync(p)) die(`missing source file ${p}`);
+    return `/* ===== ${f}.gs ===== */\n` + fs.readFileSync(p, 'utf8');
+  }).join('\n;\n');
+}
 
 /** Rewrite a top-level `var NAME = ...;` so Config.gs stays untouched on disk. */
 function setConfig(name, literal) {
