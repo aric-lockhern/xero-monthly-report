@@ -306,24 +306,38 @@ sheets['Settings'] = mockSheet('Settings', [
 
 // Slide 10's manual paste, headed the way a Google Ads export is — NOT the way the
 // tab is seeded. That is the case worth testing: the loose column matching is the
-// whole reason a paste works, so a fixture using our own headers would prove
-// nothing. Two rows plus the seeded placeholder, which must be skipped.
+// whole reason a paste works at all, so a fixture using our own headers would prove
+// nothing. Note the CATEGORY-style header, which must still be accepted now that the
+// slide is about terms.
+//
+// Dated 1999-01 on purpose. The paste takes priority over the engine tab, so rows in
+// the report month would mask the `_eng_pmax_term` path entirely and only one of the
+// two sources would ever be tested. Dating them to a month under no test lets the
+// month filter, the parser, and the engine path all be checked independently.
 sheets['PMax Categories'] = mockSheet('PMax Categories', [
   ['Month', 'Search category', 'Search volume', 'Impr.', 'Clicks', 'Cost', 'Conv.', 'Conv. value'],
-  ['', 'Paste your search terms insights export here →', '', '', '', '', '', ''],
-  ['', 'barefoot running shoes', '10K-100K', '48,200', '1,910', '$2,410.55', '61', '$7,880'],
-  ['', 'minimalist sandals', '1K-10K', '12,050', '402', '$610.20', '14', '$1,940'],
-  // A row for a different month, which must be filtered out rather than summed in.
-  ['1999-01', 'ancient history', '', '999', '99', '$9', '9', '$99'],
+  ['', 'Paste your PMax search terms export here →', '', '', '', '', '', ''],
+  ['1999-01', 'barefoot running shoes', '10K-100K', '48,200', '1,910', '$2,410.55', '61', '$7,880'],
+  ['1999-01', 'minimalist sandals', '1K-10K', '12,050', '402', '$610.20', '14', '$1,940'],
 ]);
 
-// Product Images, so slide 11's image resolution is exercised. Deliberately
-// mixed: one match by item id, one by title, one absent.
+// Product Images, so slide 11's image resolution is exercised. Deliberately mixed:
+// one match by item id, one by title, one row with a blank URL that must be ignored.
+//
+// The last row is the case that failed in the real deck. A Shopping feed carries one
+// row per SIZE variant and an out-of-stock variant drops out, so the item id Google
+// Ads reports can be absent while a sibling size — same title, same photo — is
+// present. On top of that the feed and the Ads report punctuate the title
+// differently: "Light Gray/Pink Sand" here versus "Light Gray / Pink Sand" there.
+// Both have to be tolerated or the frame stays empty.
 sheets['Product Images'] = mockSheet('Product Images', [
   ['item_id', 'title', 'image_url', 'source'],
   ['XS-PRIO-NEO-M', '', 'https://example.com/prio-neo.jpg', 'feed'],
   ['', 'Z-Trail EV Womens Sandal', 'https://example.com/ztrail.jpg', 'manual'],
   ['XS-HFS-II-M', 'HFS II Mens Running Shoe', '', 'feed'],
+  ['shopify_us_111_9001',
+   'Xero Shoes - Barefoot Shoes - HFS Original - Women - Light Gray/Pink Sand - Zero Drop Shoes',
+   'https://example.com/hfs-original-gray.jpg', 'feed'],
 ]);
 
 const twStoreSheet = mockSheet('_store', loadStore(ARGS.store));
@@ -529,6 +543,18 @@ const imgChecks = vm.runInContext(`(function () {
     byTitleWhitespace: productImageUrl_(map, '', '  z-trail  ev   womens sandal '),
     blankUrlRowIgnored: productImageUrl_(map, 'XS-HFS-II-M', 'HFS II Mens Running Shoe'),
     unknown: productImageUrl_(map, 'NOPE', 'Nope'),
+
+    // The real failure: an out-of-stock variant's id is absent from the feed, and the
+    // feed spaces the slash differently. Two sibling variant ids, one shared title —
+    // both must resolve to the one image, which is what the deck's two blank frames
+    // needed.
+    variantIdAbsent: productImageUrl_(map, 'shopify_us_111_9002',
+      'Xero Shoes - Barefoot Shoes - HFS Original - Women - Light Gray / Pink Sand - Zero Drop Shoes'),
+    siblingVariant: productImageUrl_(map, 'shopify_us_111_9003',
+      'Xero Shoes - Barefoot Shoes - HFS Original - Women - Light Gray / Pink Sand - Zero Drop Shoes'),
+    // Title beats id when both are present and they disagree — for imagery the title
+    // is the correct key, because everything sharing a title looks identical.
+    titleWinsOverId: productImageUrl_(map, 'XS-PRIO-NEO-M', 'Z-Trail EV Womens Sandal'),
   };
 })()`, context);
 
@@ -557,20 +583,24 @@ function expectEq(section, name, got, want) {
 if (!ARGS.quiet) console.log('\nPRODUCT IMAGES (slide 11 resolution)');
 {
   const want = {
-    count: 2,
+    count: 3,
     byId: 'https://example.com/prio-neo.jpg',
     byIdCaseInsensitive: 'https://example.com/prio-neo.jpg',
     byTitle: 'https://example.com/ztrail.jpg',
     byTitleWhitespace: 'https://example.com/ztrail.jpg',
     blankUrlRowIgnored: '',
     unknown: '',
+    variantIdAbsent: 'https://example.com/hfs-original-gray.jpg',
+    siblingVariant: 'https://example.com/hfs-original-gray.jpg',
+    titleWinsOverId: 'https://example.com/ztrail.jpg',
   };
   Object.keys(want).forEach(k => expectEq('product images', k, imgChecks[k], want[k]));
 }
 
 // ---- slide 10's manual paste, and slide 8's dimension resolution ----
-const pmax = vm.runInContext(
-  `readPmaxManual_(__ctx.periods.current.month)`, context);
+// The fixture rows are dated 1999-01 so they do not mask the engine path during the
+// build; read that month directly to exercise the parser.
+const pmax = vm.runInContext(`readPmaxManual_('1999-01')`, context);
 const dimChecks = vm.runInContext(`(function () {
   return {
     dim1: PRODUCT_DIM_1.field, dim1Label: PRODUCT_DIM_1.label,
@@ -612,19 +642,44 @@ if (!ARGS.quiet) console.log('\nSLIDE 10 MANUAL PASTE (loose column matching)');
 [
   ['rows kept', pmax.rows.length, 2],
   ['placeholder row skipped', pmax.rows.some(r => /Paste your/.test(r.category)), false],
-  ['other month filtered out', pmax.rows.some(r => r.category === 'ancient history'), false],
+  // A category-headed export must still parse now that the slide is about terms.
+  ['a "Search category" header still resolves', pmax.rows[0] && pmax.rows[0].category,
+    'barefoot running shoes'],
   ['thousands separator parsed', pmax.rows[0] && pmax.rows[0].impressions, 48200],
   ['currency parsed', pmax.rows[0] && pmax.rows[0].cost, 2410.55],
   ['bucketed volume kept as text', pmax.rows[0] && pmax.rows[0].search_volume, '10K-100K'],
   ['no columns went unmapped', pmax.unmapped.length, 0],
-  // The paste must WIN over the API tab, which the engine fixture also populates.
-  // Asserted through the note the block writes, because that note is what tells a
-  // reader which source the slide came from.
-  ['the paste reaches slide 10', /Pasted by hand/.test(reportText()), true],
-  ['the top category is the pasted one',
-    namedRanges['RPT_PMAX_CAT'] ? namedRanges['RPT_PMAX_CAT'].range.getValues()[1][0] : null,
-    'barefoot running shoes'],
+  ['a paste for another month does not reach the slide', /Pasted by hand/.test(reportText()), false],
 ].forEach(([name, got, want]) => expectEq('slide 10 paste', name, got, want));
+
+// ---- slide 10 from the engine: non-brand only, sorted by traffic ----
+if (ARGS.engine) {
+  if (!ARGS.quiet) console.log('\nSLIDE 10 PMAX SEARCH TERMS (engine path)');
+  const block = namedRanges['RPT_PMAX_CAT']
+    ? namedRanges['RPT_PMAX_CAT'].range.getValues()
+    : [[]];
+  const header = block[0] || [];
+  const body = block.slice(1).filter(r => String(r[0] || '').trim());
+  const terms = body.map(r => String(r[0]));
+  const impr = body.map(r => Number(r[1]) || 0);
+
+  [
+    ['reads from campaign_search_term_view', /campaign_search_term_view/.test(reportText()), true],
+    ['the column is headed Search Term', header[0], 'Search Term'],
+    // The fixture's biggest term by far is "xero shoes" at 402k impressions. If it
+    // appears at all, the brand filter is broken.
+    ['brand terms are excluded', terms.some(t => /xero/i.test(t)), false],
+    ['the brand exclusion is quantified in the note',
+      /Excluded 2 brand term\(s\)/.test(reportText()), true],
+    // "barefoot shoes" has the most impressions of the non-brand terms AND converts
+    // at zero. Sorting by conversion value would bury it; it must lead.
+    ['sorted by traffic, not by value', terms[0], 'barefoot shoes'],
+    ['the zero-converting top term survived', body[0] && Number(body[0][5]), 0],
+    ['impressions descend', impr.every((v, i) => i === 0 || impr[i - 1] >= v), true],
+    ['"zero drop" survives as non-brand', terms.indexOf('zero drop running shoes') !== -1, true],
+    ['all five non-brand terms are present', terms.length, 5],
+  ].forEach(([name, got, want]) => expectEq('slide 10 terms', name, got, want));
+}
 
 // ---- the dimension-discovery diagnostic's recommendation ----
 //

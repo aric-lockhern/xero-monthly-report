@@ -121,8 +121,8 @@ function writeDeck_(ctx) {
   catch (e) { skipped.push('slide 3 stat cards: ' + e.message); }
 
   // ---- slide 8 headers, which follow the configured product dimensions ----
-  try { fillProductHeaders_(slides, skipped); }
-  catch (e) { skipped.push('slide 8 headers: ' + e.message); }
+  try { fillTableHeaders_(slides, skipped); }
+  catch (e) { skipped.push('table headers: ' + e.message); }
 
   // ---- slide 11 product cards, with imagery ----
   try { fillProductCards_(slides, skipped); }
@@ -357,35 +357,96 @@ function insertProductImage_(slide, frame, url, skipped, label) {
 }
 
 /**
- * Rewrite slide 8's first two header cells to match the data underneath them.
+ * Which deck tables have headers that must FOLLOW the data rather than stay as the
+ * template wrote them, and what heading text the slide should carry.
  *
- * The table writer only fills DATA rows, so without this the deck would keep
- * saying "Product Type (1st)" over columns that now hold Custom Label 1 — a
- * mislabelled column being far worse than an empty one, because nothing looks
- * wrong.
+ *   slide 8  — the two product dimensions are configurable, so "Product Type (1st)"
+ *              over a Custom Label 1 column is a lie the template cannot know about.
+ *   slide 10 — became a non-brand search TERMS table; the template still says
+ *              "Search Categories", which is a different question.
  *
- * The labels come from RPT_PRODUCT's own header row rather than from
- * PRODUCT_DIM_*.label, so they follow renderProductBlock_'s decision about which
- * dimensions the rows actually describe. Two places computing the heading is how
- * they end up disagreeing.
+ * `titleWas` is matched loosely against the slide's text shapes so a heading is only
+ * replaced when it is still the template's original wording.
  */
-function fillProductHeaders_(slides, skipped) {
-  if (slides.length < 8) return;
-  var tables = slides[7].getTables();
-  if (!tables.length) { skipped.push('slide 8: no table found to relabel'); return; }
+function headerPlan_() {
+  return [
+    { slide: 8,  pick: 0, range: 'RPT_PRODUCT',  cols: 2 },
+    { slide: 10, pick: 0, range: 'RPT_PMAX_CAT', cols: 8,
+      titleWas: /search\s*categor/i, titleIs: 'Performance Max  |  Non-Brand Search Terms' },
+  ];
+}
 
-  var block = namedDisplayValues_('RPT_PRODUCT');
-  var labels = (block && block.length && block[0].length >= 2)
-    ? [block[0][0], block[0][1]]
-    : [PRODUCT_DIM_1.label, PRODUCT_DIM_2.label];
+/**
+ * Rewrite header cells (and where needed the slide heading) from the block's own
+ * header row.
+ *
+ * The table writer only fills DATA rows, so without this the deck keeps the
+ * template's headings over columns that now mean something else. A mislabelled
+ * column is far worse than an empty one, because nothing looks wrong.
+ *
+ * Labels come from the RPT_* block's header row rather than being recomputed here,
+ * so they follow whatever the render function decided the rows actually describe.
+ * Two places computing a heading is how they end up disagreeing.
+ */
+function fillTableHeaders_(slides, skipped) {
+  var plan = headerPlan_();
+  for (var p = 0; p < plan.length; p++) {
+    var step = plan[p];
+    if (slides.length < step.slide) continue;
+    var slide = slides[step.slide - 1];
 
-  var table = tables[0];
-  if (table.getNumColumns() < 2) return;
-  try {
-    table.getCell(0, 0).getText().setText(labels[0]);
-    table.getCell(0, 1).getText().setText(labels[1]);
-    progress_('Slide 8: headers set to ' + labels[0] + ' / ' + labels[1] + '.');
-  } catch (e) {
-    skipped.push('slide 8: could not relabel the first two headers — ' + e.message);
+    var block = namedDisplayValues_(step.range);
+    if (!block || !block.length) {
+      skipped.push('slide ' + step.slide + ': ' + step.range + ' is missing, headers left as-is');
+      continue;
+    }
+    var labels = block[0];
+
+    var tables = slide.getTables().slice().sort(function (a, b) { return a.getTop() - b.getTop(); });
+    if (tables.length <= step.pick) {
+      skipped.push('slide ' + step.slide + ': no table to relabel');
+      continue;
+    }
+
+    var table = tables[step.pick];
+    var n = Math.min(step.cols, labels.length, table.getNumColumns());
+    try {
+      for (var c = 0; c < n; c++) {
+        table.getCell(0, c).getText().setText(String(labels[c]));
+      }
+      progress_('Slide ' + step.slide + ': ' + n + ' header(s) set from ' + step.range + '.');
+    } catch (e) {
+      skipped.push('slide ' + step.slide + ': could not relabel headers — ' + e.message);
+    }
+
+    if (step.titleWas) retitleSlide_(slide, step, skipped);
   }
+}
+
+/**
+ * Replace a slide's heading when the template's wording no longer describes the
+ * table under it.
+ *
+ * Only rewrites a shape still carrying the ORIGINAL wording, so running this over an
+ * already-generated deck cannot mangle a heading twice, and a template someone has
+ * retitled by hand is left alone.
+ */
+function retitleSlide_(slide, step, skipped) {
+  var shapes = slide.getShapes(), hit = false;
+  for (var s = 0; s < shapes.length; s++) {
+    var text;
+    try { text = shapes[s].getText().asString(); } catch (e) { continue; }
+    if (!text || !step.titleWas.test(text)) continue;
+    try {
+      shapes[s].getText().setText(step.titleIs);
+      hit = true;
+      progress_('Slide ' + step.slide + ': heading set to "' + step.titleIs + '".');
+      break;
+    } catch (e2) {
+      skipped.push('slide ' + step.slide + ': could not retitle — ' + e2.message);
+      return;
+    }
+  }
+  // Not an error worth flagging loudly: the heading may already read correctly.
+  if (!hit) progress_('Slide ' + step.slide + ': heading already updated or not found; left as-is.');
 }

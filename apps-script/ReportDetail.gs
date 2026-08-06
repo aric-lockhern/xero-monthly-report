@@ -262,63 +262,95 @@ function toRatio_(v) {
 function renderPmaxCategoryBlock_(w, ctx) {
   var month = ctx.periods.current.month;
 
-  // MANUAL FIRST. The search-term-insight resources carry undocumented constraints
-  // that shift between API versions, so the automated query can come back empty
-  // through no fault of the configuration — and the UI panel that has the data has
-  // a Download button. Anything pasted therefore wins: you looked at it.
+  // Sources in priority order: a hand paste, then the search-TERMS tab, then the
+  // legacy search-CATEGORIES tab. The paste wins because if you pasted it you looked
+  // at it; the categories tab is last because it answers a different question and is
+  // only still read so an existing sheet renders something until the MCC script next
+  // runs with the new query.
   var manual = readPmaxManual_(month);
-  var raw = manual.rows.length
-    ? manual.rows
-    : readEngineTab_(ENGINE_PMAXCAT_SHEET).filter(function (r) { return monthOf_(r.month) === month; });
-  var source = manual.rows.length ? 'manual' : (raw.length ? 'api' : 'none');
+  var terms = readEngineTab_(ENGINE_PMAXTERM_SHEET)
+    .filter(function (r) { return monthOf_(r.month) === month; });
+  var cats = readEngineTab_(ENGINE_PMAXCAT_SHEET)
+    .filter(function (r) { return monthOf_(r.month) === month; });
 
-  var groups = groupEngine_(raw, function (r) {
-    var c = String(r.category || '').trim();
-    return c || null;
-  }).sort(byValueDesc_);
+  var raw, source;
+  if (manual.rows.length)   { raw = manual.rows; source = 'manual'; }
+  else if (terms.length)    { raw = terms;       source = 'terms'; }
+  else if (cats.length)     { raw = cats;        source = 'categories'; }
+  else                      { raw = [];          source = 'none'; }
 
-  var rows = groups.map(function (g) {
-    // Search volume is a bucketed RANGE in the UI ("10K-100K"), so it passes
-    // through as text when the source supplies it and as n/a when it does not.
-    var vol = String((g.row && g.row.search_volume) || '').trim();
+  // Group by term, then split brand from non-brand. Brand is QUANTIFIED rather than
+  // just dropped: which terms count as brand is a judgement call, and a slide that
+  // silently discards most of its traffic invites the question. Answer it up front.
+  var all = groupEngine_(raw, function (r) {
+    var t = String(r.search_term !== undefined ? r.search_term : (r.category || '')).trim();
+    return t || null;
+  });
+
+  var nonBrand = [], brandTerms = 0, brandImpr = 0, brandCost = 0;
+  for (var i = 0; i < all.length; i++) {
+    if (BRAND_TERM_RE.test(all[i].key)) {
+      brandTerms++; brandImpr += all[i].impressions; brandCost += all[i].cost;
+    } else {
+      nonBrand.push(all[i]);
+    }
+  }
+
+  // SORTED BY TRAFFIC. A search-terms slide is a discovery artefact — the rows worth
+  // reading are the ones pulling volume, including those converting at zero. Sorting
+  // by conversion value would hide exactly those.
+  nonBrand.sort(function (a, b) { return b.impressions - a.impressions; });
+
+  var rows = nonBrand.map(function (g) {
     return [
       g.key,
-      vol || null,
-      g.conversions, g.clicks, g.impressions, g.conversions_value,
+      g.impressions, g.clicks,
       div_(g.clicks, g.impressions),
-      div_(g.conversions, g.clicks),
+      g.cost, g.conversions, g.conversions_value,
+      div_(g.conversions_value, g.cost),
     ];
   });
 
   var note;
   if (source === 'manual') {
     note = 'Pasted by hand into the "' + PMAXCAT_MANUAL_SHEET + '" tab for ' + month +
-      ' — ' + manual.rows.length + ' row(s). A paste takes priority over the API tab, so this is ' +
-      'what the slide shows even if the automated feed also returned data.' +
+      ' — ' + manual.rows.length + ' row(s). A paste takes priority over the automated tabs, so ' +
+      'this is what the slide shows even if the feed also returned data.' +
       (manual.unmapped.length
         ? '  ⚠  Unrecognised column(s) ignored: ' + manual.unmapped.join(', ') + '.'
         : '');
-  } else if (source === 'api') {
-    note = 'Google Ads search-term-category insights, aggregated across Performance Max campaigns ' +
-      'and sorted by conversions.';
+  } else if (source === 'terms') {
+    note = 'Google Ads campaign_search_term_view, filtered to Performance Max campaigns. That is ' +
+      'the only resource returning RAW search terms for PMax: search_term_view returns no PMax data ' +
+      'at all, and the search-term-INSIGHT resources return category labels rather than terms.';
+  } else if (source === 'categories') {
+    note = '⚠  Showing search CATEGORIES, not terms — the "' + ENGINE_PMAXTERM_SHEET + '" tab is ' +
+      'empty, so this is falling back to the older "' + ENGINE_PMAXCAT_SHEET + '" tab. Re-paste and ' +
+      'Run the MCC Google Ads Script to get actual search terms.';
   } else {
-    note = 'EMPTY. Two ways to fill it:  (1) MANUAL — Google Ads → Campaigns → Insights → ' +
-      '"Search terms insights" → Download, then paste into the "' + PMAXCAT_MANUAL_SHEET + '" tab ' +
-      'with Month as ' + month + '. This always works and is the fastest route.  (2) AUTOMATED — ' +
-      'the MCC script tries several query shapes against customer_search_term_insight and ' +
-      'campaign_search_term_insight; if the tab is still empty, the "_eng_status" tab carries the ' +
-      'exact error Google returned for each shape tried, which is what tells a missing permission ' +
-      'apart from a renamed field.';
+    note = 'EMPTY. Two ways to fill it:  (1) AUTOMATED — re-paste and Run the MCC Google Ads Script. ' +
+      'It queries campaign_search_term_view, which is the resource that actually returns PMax search ' +
+      'terms; if the tab stays empty, "_eng_status" carries Google\'s exact error.  (2) MANUAL — ' +
+      'Google Ads → Campaigns → Insights → search terms → Download, then paste into the "' +
+      PMAXCAT_MANUAL_SHEET + '" tab with Month as ' + month + '.';
+  }
+
+  if (brandTerms) {
+    note += '  Excluded ' + brandTerms + ' brand term(s): ' +
+      Math.round(brandImpr).toLocaleString() + ' impressions, ' +
+      currencySymbol_() + Math.round(brandCost).toLocaleString() + ' cost. Brand is ' +
+      'matched by BRAND_TERM_RE in Config.gs — the brand name and its common misspellings, but ' +
+      'deliberately NOT model names like "prio" or "hfs", since counting those as brand would empty ' +
+      'this slide of the discovery terms it exists to show.';
   }
 
   w.block({
-    name: 'RPT_PMAX_CAT', slide: '10', title: 'Top PMax Search Categories',
-    note: note + '  Search Volume is a bucketed range in the Google Ads UI ("10K-100K"); where it ' +
-      'reads n/a the source did not supply it, and Impr. on the same row is the usable substitute.',
-    header: ['Search Category', 'Search Volume', 'Conversions', 'Clicks', 'Impr.',
-             'Conv. Value', 'CTR', 'Conv. Rate'],
+    name: 'RPT_PMAX_CAT', slide: '10', title: 'Performance Max — Non-Brand Search Terms',
+    note: note + '  Sorted by impressions (traffic), top ' + PMAX_CAT_ROWS + '.',
+    header: ['Search Term', 'Impr.', 'Clicks', 'CTR', 'Cost', 'Conversions', 'Conv. Value', 'ROAS'],
     rows: padRows_(rows, PMAX_CAT_ROWS, 8),
-    colFormats: [null, '#,##0', '#,##0', '#,##0', '#,##0', currencyFormat_(false), '0.00%', '0.00%'],
+    colFormats: [null, '#,##0', '#,##0', '0.00%', currencyFormat_(false), '#,##0',
+                 currencyFormat_(false), '#,##0.00'],
   });
 }
 
@@ -342,7 +374,10 @@ function readPmaxManual_(month) {
 
   var ALIASES = {
     month:             ['month', 'reporting month', 'period'],
-    category:          ['search category', 'search categories', 'category', 'search term category',
+    // Slide 10 is a search-TERMS table now, but the category spellings stay: an
+    // export of either shape should land, and both answer "what did PMax show for".
+    category:          ['search term', 'search terms', 'term', 'query', 'search query',
+                        'search category', 'search categories', 'category', 'search term category',
                         'categories', 'search category label', 'category label'],
     search_volume:     ['search volume', 'searches', 'volume', 'monthly searches',
                         'search volume index'],
@@ -367,9 +402,9 @@ function readPmaxManual_(month) {
   });
 
   if (!present.category) {
-    // No category column means this is not a search-categories paste. Report it
+    // No term/category column means this is not a search-terms paste. Report it
     // through the note rather than showing an empty slide with no explanation.
-    return { rows: [], unmapped: ['no recognisable "Search category" column — found: ' +
+    return { rows: [], unmapped: ['no recognisable "Search term" column — found: ' +
       Object.keys(raw[0]).join(', ')] };
   }
 
@@ -572,17 +607,19 @@ function ensureInputTabs_() {
 
   if (!ss.getSheetByName(PMAXCAT_MANUAL_SHEET)) {
     var m = ss.insertSheet(PMAXCAT_MANUAL_SHEET);
-    var mh = ['Month', 'Search Category', 'Search Volume', 'Impressions', 'Clicks',
+    var mh = ['Month', 'Search Term', 'Search Volume', 'Impressions', 'Clicks',
               'Cost', 'Conversions', 'Conv. Value'];
     m.getRange(1, 1, 1, mh.length).setValues([mh])
       .setFontWeight('bold').setBackground(HEAD_BG).setFontColor(HEAD_FG);
     m.setFrozenRows(1);
-    m.getRange(1, 1).setNote('Slide 10. Google Ads → Campaigns → Insights → "Search terms ' +
-      'insights" → Download, then paste here. Month as yyyy-MM; leave Month empty and the rows ' +
-      'count as the report month.\n\nColumn names are matched loosely, so you can paste the export ' +
-      'with its own headers — only a "Search category" column is required. Anything here takes ' +
-      'PRIORITY over the automated "' + ENGINE_PMAXCAT_SHEET + '" tab.');
-    m.getRange(2, 1, 1, 3).setValues([['', 'Paste your search terms insights export here →', '']])
+    m.getRange(1, 1).setNote('Slide 10 — Performance Max non-brand search terms. Google Ads → ' +
+      'Campaigns → Insights → search terms → Download, then paste here. Month as yyyy-MM; leave ' +
+      'Month empty and the rows count as the report month.\n\nColumn names are matched loosely, so ' +
+      'you can paste the export with its own headers — only a "Search term" column is required ' +
+      '(a "Search category" column is accepted too). Brand terms are filtered out at build time, ' +
+      'so paste everything.\n\nAnything here takes PRIORITY over the automated "' +
+      ENGINE_PMAXTERM_SHEET + '" tab.');
+    m.getRange(2, 1, 1, 3).setValues([['', 'Paste your PMax search terms export here →', '']])
       .setFontColor('#9ca3af').setFontStyle('italic');
     m.getRange(2, 1, 200, 1).setNumberFormat('@');
     for (var c3 = 1; c3 <= mh.length; c3++) m.autoResizeColumn(c3);

@@ -165,7 +165,15 @@ var ENGINE_MANUAL_SHEET  = '_eng_manual';
 // exactly like Google ones.
 var ENGINE_BING_SHEET    = '_eng_bing';
 var ENGINE_PRODUCT_SHEET = '_eng_product';   // product_type_l1 × l2   (slide 8)
-var ENGINE_PMAXCAT_SHEET = '_eng_pmax_cat';  // PMax search categories (slide 10)
+var ENGINE_PMAXCAT_SHEET = '_eng_pmax_cat';  // PMax search CATEGORIES — legacy, see below
+// Slide 10 is a PMax NON-BRAND SEARCH TERMS table, fed from
+// `campaign_search_term_view` — a different resource from the search-term-INSIGHT
+// ones, and the only one that returns raw terms for Performance Max.
+// `search_term_view` returns no PMax data at all; the insight resources return
+// category labels rather than terms. Read with priority over _eng_pmax_cat, which
+// stays readable so an existing sheet keeps rendering something until the Ads
+// script next runs.
+var ENGINE_PMAXTERM_SHEET = '_eng_pmax_term';
 var ENGINE_ITEM_SHEET    = '_eng_item';      // item id × title        (slide 11)
 var ENGINE_ASSET_SHEET   = '_eng_asset';     // sitelinks / assets     (slide 12)
 
@@ -190,8 +198,13 @@ var PRODUCT_ROWS   = 16;   // slide 8  — top product sub-categories
 // single word "shoes" depends on the feed. Set these on the SETTINGS TAB, not
 // here: the Google Ads Script reads the same tab, so one cell changes both sides.
 // `Diagnostics → Show product dimensions` prints what each one actually contains.
-var PRODUCT_DIM_1 = { field: 'product_type_l1',  label: 'Product Type 1' };
-var PRODUCT_DIM_2 = { field: 'product_type_l2',  label: 'Product Type 2' };
+// Custom label 1 × Custom label 4, matching the Google Ads report this slide is
+// modelled on. In this feed label 1 is the category (shoe / boot / sandal) and
+// label 4 is the model (prio / 360 / dillon / scrambler low), which is the
+// breakdown the deck wants. Confirmed against the account's own report, not
+// guessed — `Diagnostics → Show product dimensions` re-checks it against the feed.
+var PRODUCT_DIM_1 = { field: 'product_custom_attribute1', label: 'Custom Label 1' };
+var PRODUCT_DIM_2 = { field: 'product_custom_attribute4', label: 'Custom Label 4' };
 
 /**
  * Every product dimension `shopping_performance_view` can segment by, and the
@@ -258,7 +271,24 @@ function dimByField_(field) {
   return { field: field, label: field };
 }
 
-var PMAX_CAT_ROWS  = 16;   // slide 10 — top PMax search categories
+var PMAX_CAT_ROWS  = 16;   // slide 10 — top PMax non-brand search terms
+
+/**
+ * What counts as a BRAND search term on slide 10.
+ *
+ * Classified on the reading side, not in the Google Ads Script, so changing the
+ * definition is a rebuild rather than a re-run of the MCC feed. The feed stores every
+ * term; this decides which ones the slide excludes.
+ *
+ * Covers the brand name and the misspellings that dominate brand search — "zero
+ * shoes" and "xeroshoes" are the same intent as "xero shoes" and belong with it.
+ *
+ * MODEL NAMES ARE DELIBERATELY NOT HERE. "prio" and "hfs" are Xero products, so a
+ * case can be made either way, but treating them as brand would empty this slide of
+ * exactly the discovery terms it exists to show. The Report tab prints the brand
+ * volume this excludes, so the choice is visible and arguable rather than buried.
+ */
+var BRAND_TERM_RE = /(^|[^a-z])(xero|xeros|zero\s*shoe|xero\s*shoe|xeroshoe)/i;
 var TOP_ITEM_ROWS  = 5;    // slide 11 — product cards
 var PROMO_ROWS     = 3;    // slide 12 — promo sitelinks (a Grand Total row is added)
 
@@ -281,7 +311,10 @@ var HEAD_BG = '#1b2a4a', HEAD_FG = '#ffffff';
 var SUBHEAD_BG = '#eef1f6';
 var NA = 'n/a';                          // rendered when a period has no data
 
+function currencySymbol_() {
+  return CURRENCY === 'EUR' ? '€' : (CURRENCY === 'GBP' ? '£' : '$');
+}
+
 function currencyFormat_(decimals) {
-  var sym = CURRENCY === 'EUR' ? '€' : (CURRENCY === 'GBP' ? '£' : '$');
-  return '"' + sym + '"#,##0' + (decimals ? '.00' : '');
+  return '"' + currencySymbol_() + '"#,##0' + (decimals ? '.00' : '');
 }

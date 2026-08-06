@@ -39,7 +39,7 @@ function diagCheckSources() {
 
   lines.push('');
   lines.push('GOOGLE ADS ENGINE TABS');
-  var tabs = [ENGINE_DAY_SHEET, ENGINE_PRODUCT_SHEET, ENGINE_PMAXCAT_SHEET,
+  var tabs = [ENGINE_DAY_SHEET, ENGINE_PRODUCT_SHEET, ENGINE_PMAXTERM_SHEET, ENGINE_PMAXCAT_SHEET,
               ENGINE_ITEM_SHEET, ENGINE_ASSET_SHEET, PRODUCT_DIMS_SHEET];
   for (var t = 0; t < tabs.length; t++) {
     var rows = readEngineTab_(tabs[t]);

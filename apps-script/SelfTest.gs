@@ -200,6 +200,38 @@ function checkDeckContract_(t) {
 
   checkProductDims_(t);
   checkLoosePasteParsing_(t);
+  checkBrandTerms_(t);
+}
+
+/**
+ * Slide 10's brand-term filter.
+ *
+ * The regex decides what the slide is ABOUT. Too loose and it strips the discovery
+ * terms the slide exists to show; too tight and brand traffic dominates a table
+ * labelled non-brand. Both failures render perfectly, so pin the boundary.
+ */
+function checkBrandTerms_(t) {
+  var brand = ['xero shoes', 'xeroshoes', 'xero', 'zero shoes', 'zeroshoes',
+               'xero shoes prio', 'buy xero shoes online', 'XERO SHOES'];
+  var nonBrand = ['barefoot shoes', 'minimalist running shoes', 'wide toe box sandals',
+                  'zero drop boots', 'prio', 'hfs womens'];
+
+  var wrong = [];
+  for (var i = 0; i < brand.length; i++) {
+    if (!BRAND_TERM_RE.test(brand[i])) wrong.push('missed brand: "' + brand[i] + '"');
+  }
+  for (var j = 0; j < nonBrand.length; j++) {
+    if (BRAND_TERM_RE.test(nonBrand[j])) wrong.push('wrongly brand: "' + nonBrand[j] + '"');
+  }
+  t.ok('BRAND_TERM_RE splits brand from non-brand', wrong.length === 0, wrong.join('; '));
+
+  // "zero drop" is Xero's own product category and appears in genuine non-brand
+  // queries. A regex matching bare "zero" would swallow it — and swallow the single
+  // most on-topic non-brand term on the slide.
+  t.ok('"zero drop" is not treated as brand', !BRAND_TERM_RE.test('zero drop running shoes'));
+  // Model names stay non-brand, on purpose and by decision — assert it so the choice
+  // cannot drift silently.
+  t.ok('model names stay non-brand', !BRAND_TERM_RE.test('prio') && !BRAND_TERM_RE.test('hfs'));
 }
 
 /**

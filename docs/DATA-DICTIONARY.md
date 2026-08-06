@@ -131,12 +131,16 @@ Deck group `SEARCH` / `SHOPPING`.
 product dimensions. Top 16 combinations by conversion value. `Avg. CPC` =
 `Σ cost ÷ Σ clicks`; `ROAS` = `Σ conv_value ÷ Σ cost`.
 
+**Default: `product_custom_attribute1` × `product_custom_attribute4`** — Custom label
+1 × Custom label 4, matching the Google Ads report this slide is modelled on. In this
+feed label 1 is the category (`shoe` / `boot` / `sandal`) and label 4 is the model
+(`prio` / `360` / `dillon` / `scrambler low`).
+
 Which two is a property of **your Shopping feed**, not of Google: custom labels are
-free text the feed sets, so whether "Custom label 1" holds a category or the single
-word `shoes` depends on how the feed was built. Set `PRODUCT_DIM_1` /
-`PRODUCT_DIM_2` on the **`Settings` tab** — the Google Ads Script reads those same
-cells, so one edit changes both sides and there is no code to touch. Then re-run
-the MCC script and rebuild.
+free text the feed sets, so a label can equally well hold one value for every
+product. Set `PRODUCT_DIM_1` / `PRODUCT_DIM_2` on the **`Settings` tab** — the Google
+Ads Script reads those same cells, so one edit changes both sides and there is no
+code to touch. Then re-run the MCC script and rebuild.
 
 `Diagnostics → Show product dimensions` prints what every dimension actually
 contains, with spend, and recommends a pair. It reads `_eng_product_dims`, which the
@@ -160,24 +164,46 @@ separately for those two channel types.
 
 Competitors: manual paste. GAPS §1.
 
-### Slide 10 — PMax search categories (`RPT_PMAX_CAT`)
-Two sources, and the **manual one wins**:
+### Slide 10 — PMax non-brand search terms (`RPT_PMAX_CAT`)
+Raw Performance Max **search terms**, brand excluded, **sorted by impressions**.
 
-1. **`PMax Categories`** tab — a paste of Google Ads → Campaigns → Insights →
-   *Search terms insights* → **Download**. Column names are matched loosely, so the
-   export's own headers work as-is; only a "Search category" column is required, and
-   a row with no `Month` counts as the report month. Numbers are parsed tolerantly
-   (`1,234`, `$1,234.56`, `12%`), because `Number('1,234')` is `NaN` and one `NaN`
-   summed into a column is a wrong slide with nothing visibly broken.
-2. **`_eng_pmax_cat`** ← `customer_search_term_insight` / `campaign_search_term_insight`,
-   aggregated across PMax campaigns.
+Sources, in priority order:
 
-A paste takes priority: the API resources are inconsistently available (GAPS §4), so
-the automated tab can be empty with nothing wrong at your end — and if you pasted
-it, you looked at it. The block's note always says which source it used.
+1. **`PMax Categories`** tab — a hand paste. Column names matched loosely, so a
+   Google Ads export works with its own headers; only a "Search term" column is
+   required (a "Search category" column is accepted too). Numbers are parsed
+   tolerantly (`1,234`, `$1,234.56`, `12%`), because `Number('1,234')` is `NaN` and
+   one `NaN` summed into a column is a wrong slide with nothing visibly broken.
+2. **`_eng_pmax_term`** ← `campaign_search_term_view`, filtered to
+   `campaign.advertising_channel_type = 'PERFORMANCE_MAX'`.
+3. **`_eng_pmax_cat`** — the older search-CATEGORIES tab, read only so an existing
+   sheet still renders something until the MCC script next runs. The block says so.
 
-`CTR` = `clicks ÷ impressions`; `Conv. Rate` = `conversions ÷ clicks`.
-`Search Volume` is a bucketed range and passes through as text — GAPS §4.
+> **Why `campaign_search_term_view` and not the obvious resource.** Three candidates,
+> one works: `search_term_view` returns **no PMax data at all** (it aggregates at
+> ad-group level, and PMax has asset groups — the query succeeds and yields nothing);
+> `customer_search_term_insight` / `campaign_search_term_insight` return **category
+> labels**, not terms, and demand a single-resource filter or fail
+> `REQUIRES_FILTER_BY_SINGLE_RESOURCE`; `campaign_search_term_view` returns the raw
+> term for PMax *and* Search with full metrics including cost.
+>
+> Never add a keyword-related segment (`keyword.info.text` and friends) to that query.
+> Google documents that it silently filters out every Performance Max row — the query
+> still succeeds and still returns Search rows, so it looks like "PMax had no search
+> terms" rather than like a mistake.
+
+**Brand is excluded on the READING side**, by `BRAND_TERM_RE` in `Config.gs`, so
+redefining brand is a rebuild rather than another MCC run. It covers the brand name
+and its common misspellings (`xeroshoes`, `zero shoes`) but deliberately **not** model
+names like `prio` or `hfs` — counting those as brand would empty the slide of exactly
+the discovery terms it exists to show. The excluded impressions and cost are printed
+in the block's note, so the choice is visible and arguable rather than buried.
+
+`CTR` = `clicks ÷ impressions`; `ROAS` = `Σ conv_value ÷ Σ cost`.
+
+Sorted by **traffic**, not conversion value: a high-impression zero-conversion term
+is the most interesting row on a discovery slide, and value-sorting hides it. The
+engine feed also truncates by impressions for the same reason.
 
 ### Slide 11 — Top products (`RPT_TOP_ITEMS`)
 `_eng_item` ← `shopping_performance_view` by `segments.product_item_id` /

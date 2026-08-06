@@ -311,6 +311,35 @@
 
     ["$REPORT_MONTH", "product_type_l3", "(not set)", 3520000, 48100, 60200, 1430, 195000]
   ],
+  "_comment_pmax_term": [
+    "Slide 10: raw Performance Max search TERMS from campaign_search_term_view.",
+    "That is the only resource returning terms for PMax — search_term_view returns",
+    "no PMax rows at all, and the *_search_term_insight resources return category",
+    "labels instead of terms.",
+    "",
+    "Deliberately includes brand terms that MUST be filtered out by BRAND_TERM_RE,",
+    "and gives the top brand term more impressions than anything else — so a broken",
+    "filter shows up as brand sitting at the top of a slide titled non-brand, which",
+    "is the failure that would ship unnoticed.",
+    "",
+    "Also deliberately: the highest-impression NON-brand term converts at zero. It",
+    "must still appear first. Sorting this table by conversion value instead of by",
+    "traffic would drop it, and it is the single most useful row on a discovery",
+    "slide."
+  ],
+  "_eng_pmax_term": [
+    ["month", "campaign_id", "campaign", "search_term",
+     "impressions", "clicks", "cost", "conversions", "conversions_value"],
+
+    ["$REPORT_MONTH", "1001", "LD - PMAX - All Products - NB - Performance", "xero shoes", 402000, 18400, 7100, 690, 92000],
+    ["$REPORT_MONTH", "1001", "LD - PMAX - All Products - NB - Performance", "xeroshoes prio", 88000, 3900, 1500, 141, 19000],
+
+    ["$REPORT_MONTH", "1001", "LD - PMAX - All Products - NB - Performance", "barefoot shoes", 152000, 14100, 9800, 0, 0],
+    ["$REPORT_MONTH", "1001", "LD - PMAX - All Products - NB - Performance", "zero drop running shoes", 131000, 8900, 6400, 164, 21900],
+    ["$REPORT_MONTH", "1001", "LD - PMAX - All Products - NB - Performance", "wide toe box shoes", 74000, 5100, 3900, 96, 12800],
+    ["$REPORT_MONTH", "1001", "LD - PMAX - All Products - NB - Performance", "minimalist hiking boots", 41000, 2600, 2100, 38, 5200],
+    ["$REPORT_MONTH", "1001", "LD - PMAX - All Products - NB - Performance", "huarache sandals mens", 22000, 1300, 980, 17, 2400]
+  ],
   "_eng_pmax_cat": [
     [
       "month",

@@ -54,7 +54,7 @@ npm test
 Either way you get the whole report built in memory and every invariant checked:
 
 ```
-✓ all 166 invariants hold.
+✓ all 169 invariants hold.
 
 ✓ harness checks: product images, slide 8 dimensions, slide 10 paste, cross-runtime resolvers.
 ```

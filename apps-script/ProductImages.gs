@@ -83,19 +83,49 @@ function readProductImages_() {
   return out;
 }
 
-/** Titles vary by whitespace and case between the feed and the Ads report. */
+/**
+ * The title match key: lower-cased with every non-alphanumeric character removed.
+ *
+ * Aggressive on purpose. Collapsing whitespace alone is not enough — the Ads report
+ * and the feed disagree about PUNCTUATION, not just spacing, and
+ *
+ *   "HFS Original - Women - Light Gray / Pink Sand"
+ *   "HFS Original - Women - Light Gray/Pink Sand"
+ *
+ * are the same product with different spaces around one slash. Under whitespace-only
+ * normalisation those are different keys, and the image silently fails to resolve.
+ * Stripping punctuation makes both `hfsoriginalwomenlightgraypinksand`.
+ *
+ * Safe to collapse this hard because the title carries the COLOURWAY, so two
+ * genuinely different products cannot normalise to the same key.
+ */
 function normTitle_(t) {
-  return String(t || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  return String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
 /**
- * Resolve one product's image URL. Item id wins over title, because ids are
- * stable and titles get edited.
+ * Resolve one product's image URL. **Title first, item id second.**
+ *
+ * Title wins because of how the feed and the Ads report disagree. A Shopping feed
+ * carries one row per VARIANT (size), each with its own item id, and an
+ * out-of-stock variant drops out of the feed entirely — so the exact id Google Ads
+ * reports may not be in the feed at all. Its sibling sizes are, and they share the
+ * title and therefore the photograph. Matching on the title finds them; matching on
+ * the id gives up.
+ *
+ * This is a change of preference, not of correctness: for IMAGERY the title is the
+ * right key, because everything sharing a title looks identical. Ids stay as the
+ * second try so a hand-pasted id-only row still works.
+ *
+ * Deliberately NOT attempted: matching on the item id's product-level prefix
+ * (`shopify_us_<product>_<variant>` → `shopify_us_<product>`). One Shopify product
+ * can span several colourways, so that would resolve a pink shoe to a grey one —
+ * and the wrong photo beside a product name is worse than a visible gap.
  */
 function productImageUrl_(map, itemId, title) {
-  var byId = map.byId[String(itemId || '').trim().toLowerCase()];
-  if (byId) return byId;
-  return map.byTitle[normTitle_(title)] || '';
+  var byTitle = map.byTitle[normTitle_(title)];
+  if (byTitle) return byTitle;
+  return map.byId[String(itemId || '').trim().toLowerCase()] || '';
 }
 
 // ============================== FEED REFRESH ===============================
@@ -366,6 +396,7 @@ function productImageStatus() {
   } else {
     var vals = range.getValues().slice(1);   // [title, item_id, orders, revenue, cost, roas]
     lines.push('Slide 11 products this month:');
+    var misses = [];
     for (var i = 0; i < vals.length; i++) {
       var title = String(vals[i][0] || '').trim();
       var id = String(vals[i][1] || '').trim();
@@ -373,15 +404,68 @@ function productImageStatus() {
       var url = productImageUrl_(map, id, title);
       lines.push('  ' + (url ? '✓' : '✗') + '  ' + (title || id).slice(0, 60) +
         (url ? '' : '   ← no image; frame keeps its placeholder'));
+      if (!url) misses.push({ title: title, id: id });
+    }
+
+    // For each miss, show the feed titles that come CLOSEST. A bare "no match" tells
+    // you nothing about whether the product is absent from the feed or merely titled
+    // differently, and those need opposite fixes.
+    if (misses.length) {
+      lines.push('');
+      lines.push('WHY THOSE MISSED — closest titles in the feed:');
+      for (var m = 0; m < misses.length; m++) {
+        lines.push('');
+        lines.push('  ' + (misses[m].title || misses[m].id));
+        lines.push('    looked for key: ' + normTitle_(misses[m].title));
+        var near = nearestFeedTitles_(map, misses[m].title, 3);
+        if (!near.length) {
+          lines.push('    nothing in the feed resembles it — the product is probably absent from ' +
+            'the feed entirely. Paste its image_url into the tab by hand.');
+        } else {
+          for (var n = 0; n < near.length; n++) {
+            lines.push('    ' + near[n].shared + ' chars in common:  ' + near[n].key);
+          }
+          lines.push('    If one of those IS this product, the feed titles it differently — paste ' +
+            'this product\'s image_url by hand.');
+        }
+      }
     }
   }
 
   lines.push('');
-  lines.push('Matching is by item id first, then exact title. A miss usually means the feed uses a ' +
-    'different id format than the Ads report — paste that one product\'s image_url into the tab by ' +
-    'hand and it will stick (manual rows survive every refresh).');
+  lines.push('Matching is by TITLE first, then item id. Title wins because a Shopping feed carries ' +
+    'one row per size variant and an out-of-stock variant drops out of the feed — so the exact id ' +
+    'Google Ads reports may be missing while its sibling sizes, which share the title and the same ' +
+    'photo, are present.');
+  lines.push('');
+  lines.push('A miss you cannot explain: paste that one product\'s image_url into the "' +
+    PRODUCT_IMAGE_SHEET + '" tab by hand. Manual rows survive every refresh, so it sticks.');
 
   tell_('Product image status', lines.join('\n'));
+}
+
+/**
+ * The feed title keys most similar to `title`, by shared leading characters.
+ *
+ * Crude on purpose — this is a diagnostic hint, not a matcher. Comparing normalised
+ * prefixes is enough to tell the two cases apart that need different fixes: "the
+ * feed has this product under a slightly different title" (a long common prefix)
+ * versus "this product is not in the feed at all" (nothing close).
+ */
+function nearestFeedTitles_(map, title, limit) {
+  var want = normTitle_(title);
+  if (!want) return [];
+
+  var scored = [];
+  var keys = Object.keys(map.byTitle);
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i], shared = 0;
+    while (shared < k.length && shared < want.length && k.charAt(shared) === want.charAt(shared)) shared++;
+    // Below ~12 characters in common it is noise, not a near miss.
+    if (shared >= 12) scored.push({ key: k, shared: shared });
+  }
+  scored.sort(function (a, b) { return b.shared - a.shared; });
+  return scored.slice(0, limit);
 }
 
 

@@ -85,37 +85,45 @@ specifically asks for GA4-consistent CVR.
 
 ---
 
-## 4. PMax search categories, and "Search Volume"
+## 4. PMax search terms — solved, but not by the obvious resource
 
-The Google Ads UI's **Search terms insights** panel is backed by
-`customer_search_term_insight` (account level, which is what the panel shows) and
-`campaign_search_term_insight` (per campaign, and selectable only while filtering
-to a single campaign id).
+Slide 10 is a **Performance Max non-brand search TERMS** table, sorted by traffic.
+Getting terms out of PMax needs the right resource, and two of the three obvious
+candidates fail in ways that look like "there is no data" rather than like a mistake:
 
-These resources carry **undocumented constraints that the query builder does not
-catch** — which fields, segments and filters are legal has changed between API
-versions and differs between the two resources. A wrong combination returns an
-error, or worse, zero rows.
+| Resource | What happens |
+|---|---|
+| `search_term_view` | **No Performance Max rows at all.** It aggregates at ad-group level and PMax has asset groups. The query succeeds and returns nothing. |
+| `customer_search_term_insight` / `campaign_search_term_insight` | Returns **category labels** ("barefoot shoes"), not the terms. Also demands a single-resource filter or fails `REQUIRES_FILTER_BY_SINGLE_RESOURCE`, and can hit `RESOURCE_EXHAUSTED` at campaign granularity. |
+| **`campaign_search_term_view`** | **This one.** Raw `search_term`, for PMax *and* Search, aggregated at campaign level, with full metrics including cost. |
 
-So `fetchPmaxCategories_` does not commit to one guess. It walks candidate queries
-from richest to plainest — account level first, then per-campaign — and uses the
-first that returns rows. The query that worked is recorded in the tab's
-`source_query` column, and **every failure's exact error text lands on
-`_eng_status`**. When the block is empty you therefore learn why from Google's own
-words rather than guessing.
+So `fetchPmaxSearchTerms_` queries `campaign_search_term_view` filtered to
+`campaign.advertising_channel_type = 'PERFORMANCE_MAX'`, into `_eng_pmax_term`.
 
-**And there is a paste, which always works.** The UI panel that has this data has a
-**Download** button, so `PMax Categories` is a manual input tab read with **priority
-over** `_eng_pmax_cat`. Column names are matched loosely — paste the export with its
-own headers. This is deliberately not a last resort: whether the API exposes these
-resources to a given account at a given API version is outside your control, and
-slide 10 should not be blocked on it. The block's note always says which source it
-used, so a paste can never be mistaken for automation or vice versa.
+> **Never add a keyword-related segment to that query** — `keyword.info.text` and
+> friends. Google documents that doing so filters out every Performance Max row. The
+> query still succeeds and still returns Search rows, so the symptom is "PMax
+> apparently had no search terms", which is indistinguishable from a quiet account.
 
-**Search Volume** is a bucketed range in the UI ("10K-100K"), not a number. The
-feed asks for `metrics.search_volume` in its richest variant and passes the value
-through when the API supplies it; where the column reads `n/a` it did not, and
-`Impr.` on the same row is the usable substitute.
+**Brand exclusion happens on the reading side**, via `BRAND_TERM_RE` in `Config.gs`,
+so redefining brand is a rebuild rather than another 30-minute MCC run. It matches the
+brand name and its common misspellings (`xeroshoes`, `zero shoes`) but deliberately
+**not** model names like `prio` or `hfs`: those are Xero products, so a case can be
+made either way, but treating them as brand empties the slide of exactly the discovery
+terms it exists to show. The block's note prints the excluded impressions and cost so
+the choice is visible and arguable.
+
+`zero drop` is a trap worth naming — it is Xero's own product category and appears in
+genuine non-brand queries, so a regex matching bare `zero` would swallow the single
+most on-topic non-brand term on the slide. The self-test pins that.
+
+**Still a paste if you need it.** The `PMax Categories` tab is read with priority over
+the automated tab, so a UI export always wins. It accepts a "Search term" or a "Search
+category" column, matched loosely.
+
+**Search volume** is not available: the UI shows it as a bucketed range ("10K-100K")
+attached to search *categories*, not terms. `Impr.` is the substitute and is what the
+slide carries.
 
 ---
 
@@ -149,8 +157,31 @@ aspect ratio rather than stretched — product shots are near-square, the frames
 portrait, and a distorted shoe on a client deck is worse than a slightly smaller
 one.
 
-Matching is by **item id first, then exact title**, because which of the two the
-engine feed carries depends on the account's feed setup.
+Matching is by **title first, then item id** — and the title key is lower-cased with
+every non-alphanumeric character stripped.
+
+Both of those are deliberate, and both come from real misses:
+
+- **Title before id.** A Shopping feed carries one row per **size variant**, each with
+  its own item id, and an out-of-stock variant drops out of the feed entirely. So the
+  exact id Google Ads reports may simply not be in the feed — while its sibling sizes
+  are, sharing the title and therefore the photograph. For *imagery* the title is the
+  correct key, because everything sharing a title looks identical.
+- **Punctuation stripped, not just whitespace collapsed.** The feed and the Ads report
+  disagree about punctuation: `Light Gray / Pink Sand` versus `Light Gray/Pink Sand`
+  is the same product with different spaces around one slash. Under whitespace-only
+  normalisation those are different keys and the frame silently stays empty. Safe to
+  collapse this hard because the title carries the colourway, so two genuinely
+  different products cannot normalise to the same key.
+
+**Deliberately NOT attempted:** matching on the item id's product-level prefix
+(`shopify_us_<product>_<variant>` → `shopify_us_<product>`). One Shopify product can
+span several colourways, so that would resolve a pink shoe to a grey one.
+
+When a product still doesn't resolve, `Setup → Product image status` prints the key it
+looked for and the **closest titles in the feed**, which separates the two cases that
+need opposite fixes: the feed titles this product differently (a long common prefix)
+versus the product isn't in the feed at all (nothing close).
 
 **A product with no match keeps its "Product Image" placeholder.** That is
 deliberate: a visible gap is obvious and fixable in ten seconds, whereas the wrong
@@ -174,11 +205,16 @@ the rest of the deck is unaffected.
 `product_item_id` and `product_title`. Google will happily return any of them.
 
 What it **cannot** tell you is which ones hold anything worth putting on a slide.
-Custom labels are free text the Shopping feed sets. In the real US feed, *Custom
-label 1* is the single value `shoes` for every product and *Custom label 4* is
-`female` / `male` / `unisex` — so a table segmented by those is either one row or a
-gender split, neither of which is a product category. Nothing about that is visible
-from the API, the docs, or the query.
+Custom labels are free text the Shopping feed sets, so a label can hold one value for
+every product, or a gender, or a genuinely useful category — and nothing about which is
+visible from the API, the docs, or the query.
+
+In this account the answer is **Custom label 1 × Custom label 4**: label 1 is the
+category (`shoe` / `boot` / `sandal`) and label 4 is the model (`prio` / `360` /
+`dillon` / `scrambler low`). That is the default, confirmed against the account's own
+Google Ads report rather than guessed. `product_type` also holds a taxonomy
+(`shoes › female › shoes › 5.5`) but its second level is gender, which is not what the
+slide is for.
 
 So don't guess. `_eng_product_dims` — written by the MCC script, one query per
 dimension — records every dimension's distinct values with spend and conversion

@@ -24,12 +24,12 @@ Google Ads → Campaigns → select the brand campaigns → Insights → Auction
 → download. Paste into the `Auction Insights` tab with `Month` as `yyyy-MM`.
 Nothing else can produce this data ([GAPS §1](GAPS.md)).
 
-**☐ Paste last month's PMax search categories.**
-Google Ads → Campaigns → Insights → *Search terms insights* → **Download**. Paste
-into the `PMax Categories` tab — the export's own headers are fine, and a blank
-`Month` counts as the report month. This takes priority over the automated feed and
-is the reliable way to fill slide 10 ([GAPS §4](GAPS.md)). Skip it only if
-`_eng_pmax_cat` came back populated.
+**☐ Slide 10 (PMax search terms) — normally nothing to do.**
+The MCC script fills `_eng_pmax_term` from `campaign_search_term_view`. Only if that
+tab is empty: Google Ads → Campaigns → Insights → search terms → **Download** → paste
+into the `PMax Categories` tab. The export's own headers are fine, a blank `Month`
+counts as the report month, and brand terms are filtered out at build time so paste
+everything ([GAPS §4](GAPS.md)).
 
 **☐ Add any promo windows.**
 `Promos` tab: `Promo Name`, `Start`, `End` as `yyyy-MM-dd`. Skip if there was no
@@ -80,7 +80,11 @@ dates and the footers. What's left:
 the `Report` tab, paste over slide 9's placeholder chart. Paste **linked** and
 future rebuilds update it in place ([GAPS §7](GAPS.md)).
 
-**☐ Slide 11 — drop in product imagery** from the Shopping feed.
+**☐ Slide 11 — check the product photos landed.** They are inserted automatically
+from the Shopping feed, matched by product title. Any frame still showing "Product
+Image" means no match: run `Setup → Product image status`, which prints the key it
+looked for and the closest feed titles, then paste that one `image_url` into the
+`Product Images` tab by hand — manual rows survive every refresh.
 
 **☐ Slide 12 — add the ad-unit screenshot.** Duplicate the slide per promo if there
 was more than one.

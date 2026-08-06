@@ -138,10 +138,11 @@ function createInputTabs() {
     'Created (or confirmed) three hand-fed tabs:\n\n' +
     '· "' + AUCTION_SHEET + '" — paste your Auction Insights export here. No Google API exposes ' +
     'this data, so slide 9\'s competitor block cannot be automated.\n\n' +
-    '· "' + PMAXCAT_MANUAL_SHEET + '" — slide 10. Google Ads → Campaigns → Insights → "Search terms ' +
-    'insights" → Download, then paste. Column names are matched loosely, so the export\'s own ' +
-    'headers are fine. A paste here takes PRIORITY over the automated feed, which is the reliable ' +
-    'way to fill slide 10 — the API\'s search-term-insight resources are inconsistently available.\n\n' +
+    '· "' + PMAXCAT_MANUAL_SHEET + '" — slide 10, Performance Max non-brand search terms. The MCC ' +
+    'script now fills this automatically from campaign_search_term_view, so this tab is a FALLBACK: ' +
+    'Google Ads → Campaigns → Insights → search terms → Download, then paste. Column names are ' +
+    'matched loosely, so the export\'s own headers are fine, and brand terms are filtered out at ' +
+    'build time so you can paste everything. A paste takes PRIORITY over the automated tab.\n\n' +
     '· "' + PROMO_SHEET + '" — list promo windows (name, start, end). Slide 12 measures any promo ' +
     'overlapping the report month.');
 }
@@ -183,7 +184,7 @@ function firstRunCheck() {
     }
   }
 
-  var engTabs = [ENGINE_DAY_SHEET, ENGINE_PRODUCT_SHEET, ENGINE_PMAXCAT_SHEET,
+  var engTabs = [ENGINE_DAY_SHEET, ENGINE_PRODUCT_SHEET, ENGINE_PMAXTERM_SHEET,
                  ENGINE_ITEM_SHEET, ENGINE_ASSET_SHEET];
   var present = [], missing = [];
   for (var i = 0; i < engTabs.length; i++) {
@@ -206,12 +207,16 @@ function firstRunCheck() {
       're-paste and Run the MCC script to have it probe every dimension.');
   }
 
-  if (!readEngineTab_(PMAXCAT_MANUAL_SHEET).length && !readEngineTab_(ENGINE_PMAXCAT_SHEET).length) {
-    notes.push('Slide 10 has no data from either source. The reliable route is the paste: Google Ads ' +
-      '→ Campaigns → Insights → "Search terms insights" → Download → paste into the "' +
-      PMAXCAT_MANUAL_SHEET + '" tab (Setup → Create the manual input tabs creates it). Google\'s ' +
-      'search-term-insight API resources are not consistently available, so the automated feed can ' +
-      'come back empty with nothing wrong at your end.');
+  var termRows = readEngineTab_(ENGINE_PMAXTERM_SHEET).length;
+  if (!termRows && !readEngineTab_(PMAXCAT_MANUAL_SHEET).length) {
+    notes.push('Slide 10 (PMax non-brand search terms) has no data. Re-paste and Run the MCC Google ' +
+      'Ads Script — it queries campaign_search_term_view, the only resource that returns raw search ' +
+      'terms for Performance Max. If "' + ENGINE_PMAXTERM_SHEET + '" stays empty, "_eng_status" ' +
+      'carries Google\'s exact error. Fallback: paste the UI export into the "' +
+      PMAXCAT_MANUAL_SHEET + '" tab.');
+  } else if (!termRows && readEngineTab_(ENGINE_PMAXCAT_SHEET).length) {
+    notes.push('Slide 10 is falling back to the older "' + ENGINE_PMAXCAT_SHEET + '" tab, which holds ' +
+      'search CATEGORIES rather than terms. Re-paste and Run the MCC script to get actual terms.');
   }
 
   if (!DECK_TEMPLATE_ID) {

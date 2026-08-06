@@ -71,6 +71,7 @@ var CONFIG = {
   TAB_DAY:      '_eng_day',
   TAB_PRODUCT:  '_eng_product',
   TAB_PMAX_CAT: '_eng_pmax_cat',
+  TAB_PMAX_TERM: '_eng_pmax_term',
   TAB_ITEM:     '_eng_item',
   TAB_ASSET:    '_eng_asset',
   TAB_STATUS:   '_eng_status',
@@ -96,8 +97,8 @@ var CONFIG = {
   // Google's custom labels are zero-indexed in the API: the UI's "Custom label 1"
   // is segments.product_custom_attribute1. Other options include product_type_l1
   // ..l5, product_brand, product_condition, product_channel.
-  PRODUCT_DIM_1: 'product_type_l1',
-  PRODUCT_DIM_2: 'product_type_l2',
+  PRODUCT_DIM_1: 'product_custom_attribute1',
+  PRODUCT_DIM_2: 'product_custom_attribute4',
 
   // The Settings tab in the reporting spreadsheet. Must match SETTINGS_SHEET in
   // the Apps Script Config/Settings.gs.
@@ -107,6 +108,10 @@ var CONFIG = {
   TOP_PRODUCT_ROWS: 60,
   TOP_ITEM_ROWS:    40,
   TOP_CATEGORY_ROWS: 60,
+  // Generous, because brand terms are filtered out on the reading side and brand
+  // usually dominates the top of a PMax search-term list. Keeping only 60 here could
+  // leave fewer than 16 non-brand rows to fill the slide.
+  TOP_TERM_ROWS:    250,
 };
 
 var CHANNEL = 'google-ads';   // matches the Triple Whale channel id, so the
@@ -150,6 +155,7 @@ function main() {
     { tab: CONFIG.TAB_DAY,      header: HEADER_DAY,      fn: fetchCampaignDays_,   range: range },
     { tab: CONFIG.TAB_PRODUCT,  header: HEADER_PRODUCT,  fn: fetchProductTypes_,   range: detailRange },
     { tab: CONFIG.TAB_ITEM,     header: HEADER_ITEM,     fn: fetchItems_,          range: detailRange },
+    { tab: CONFIG.TAB_PMAX_TERM, header: HEADER_PMAX_TERM, fn: fetchPmaxSearchTerms_, range: detailRange },
     { tab: CONFIG.TAB_PMAX_CAT, header: HEADER_PMAX_CAT, fn: fetchPmaxCategories_, range: detailRange },
     { tab: CONFIG.TAB_ASSET,    header: HEADER_ASSET,    fn: fetchAssets_,         range: detailRange },
     { tab: CONFIG.TAB_PRODUCT_DIMS, header: HEADER_PRODUCT_DIMS, fn: fetchProductDims_, range: detailRange },
@@ -551,6 +557,64 @@ function fetchItems_(range) {
   return topPerMonth_(acc, 3, CONFIG.TOP_ITEM_ROWS);
 }
 
+// ============================== REPORT: PMAX SEARCH TERMS ==================
+
+var HEADER_PMAX_TERM = ['month', 'campaign_id', 'campaign', 'search_term',
+                        'impressions', 'clicks', 'cost', 'conversions', 'conversions_value'];
+
+/**
+ * Raw search TERMS for Performance Max, from `campaign_search_term_view`.
+ *
+ * WHY THIS RESOURCE AND NOT THE OBVIOUS ONE
+ * ---------------------------------------------------------------------------
+ * There are three candidates and only one of them works here:
+ *
+ *   search_term_view              returns NO Performance Max data at all. It
+ *                                 aggregates at ad-group level, and PMax has asset
+ *                                 groups. Querying it for PMax silently yields
+ *                                 nothing — no error, just no rows.
+ *   *_search_term_insight         returns CATEGORY LABELS ("barefoot shoes"), not
+ *                                 the terms themselves, and requires filtering to a
+ *                                 single resource or fails REQUIRES_FILTER_BY_SINGLE_RESOURCE.
+ *   campaign_search_term_view     returns the raw term, for PMax AND Search, with
+ *                                 full metrics including cost. This one.
+ *
+ * The selectable field is `campaign_search_term_view.search_term`.
+ *
+ * DO NOT add any keyword-related segment (keyword.info.text and friends). Google
+ * documents that doing so filters out every Performance Max row — the query still
+ * succeeds and still returns Search rows, so the failure looks like "PMax just had
+ * no search terms" rather than like a mistake.
+ *
+ * Brand classification happens on the Apps Script side, not here: this writes every
+ * term, so redefining brand is a rebuild rather than another 30-minute MCC run.
+ */
+function fetchPmaxSearchTerms_(range) {
+  // The campaign fields come along as attributed resources, which is what lets one
+  // query cover every PMax campaign instead of one query per campaign.
+  var q = 'SELECT segments.date, campaign_search_term_view.search_term, ' +
+    'campaign.id, campaign.name, ' +
+    'metrics.impressions, metrics.clicks, metrics.cost_micros, ' +
+    'metrics.conversions, metrics.conversions_value ' +
+    'FROM campaign_search_term_view ' +
+    'WHERE segments.date BETWEEN "' + range.start + '" AND "' + range.end + '" ' +
+    'AND campaign.advertising_channel_type = "PERFORMANCE_MAX" ' +
+    'AND metrics.impressions > 0';
+
+  var acc = {};
+  eachRow_(q, function (r) {
+    var month = String(r.segments.date).slice(0, 7);
+    var term = (r.campaignSearchTermView && r.campaignSearchTermView.searchTerm) || '';
+    if (!term) return;
+    addTo_(acc, [month, String(r.campaign.id), r.campaign.name, term].join('||'), r);
+  });
+
+  // Ranked BY IMPRESSIONS, not by conversion value. Slide 10 sorts by traffic, and
+  // truncating by value first would drop the high-traffic zero-conversion terms —
+  // which on a search-terms slide are the rows worth reading.
+  return topPerMonth_(acc, 4, CONFIG.TOP_TERM_ROWS, 'impressions');
+}
+
 // ============================== REPORT: PMAX SEARCH CATEGORIES =============
 
 var HEADER_PMAX_CAT = ['month', 'campaign_id', 'campaign', 'category', 'search_volume',
@@ -749,20 +813,30 @@ function addTo_(acc, key, r) {
 }
 
 /**
- * Flatten an accumulator to rows, keeping only the top `limit` by conversion
- * value WITHIN each month, so one big month cannot crowd out another entirely.
- * `keyLen` is how many '||' parts the key has.
+ * Flatten an accumulator to rows, keeping only the top `limit` WITHIN each month,
+ * so one big month cannot crowd out another entirely. `keyLen` is how many '||'
+ * parts the key has.
+ *
+ * `rankBy` defaults to conversion value, which is right for the product and item
+ * reports. Pass 'impressions' for anything the deck sorts by TRAFFIC: truncating by
+ * value and then re-sorting by impressions on the reading side would silently
+ * discard the high-traffic zero-conversion terms, which on a search-terms slide are
+ * the most interesting rows on it.
  */
-function topPerMonth_(acc, keyLen, limit) {
+function topPerMonth_(acc, keyLen, limit, rankBy) {
   var byMonth = {};
   Object.keys(acc).forEach(function (k) {
     var month = k.split('||')[0];
     (byMonth[month] || (byMonth[month] = [])).push(acc[k]);
   });
 
+  var rank = (rankBy === 'impressions')
+    ? function (x) { return x.impressions; }
+    : function (x) { return x.value; };
+
   var out = [];
   Object.keys(byMonth).sort().forEach(function (month) {
-    byMonth[month].sort(function (a, b) { return b.value - a.value; });
+    byMonth[month].sort(function (a, b) { return rank(b) - rank(a); });
     var keep = byMonth[month].slice(0, limit);
     for (var i = 0; i < keep.length; i++) {
       var parts = keep[i].key.split('||');

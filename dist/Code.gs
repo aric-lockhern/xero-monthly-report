@@ -189,7 +189,15 @@ var ENGINE_MANUAL_SHEET  = '_eng_manual';
 // exactly like Google ones.
 var ENGINE_BING_SHEET    = '_eng_bing';
 var ENGINE_PRODUCT_SHEET = '_eng_product';   // product_type_l1 × l2   (slide 8)
-var ENGINE_PMAXCAT_SHEET = '_eng_pmax_cat';  // PMax search categories (slide 10)
+var ENGINE_PMAXCAT_SHEET = '_eng_pmax_cat';  // PMax search CATEGORIES — legacy, see below
+// Slide 10 is a PMax NON-BRAND SEARCH TERMS table, fed from
+// `campaign_search_term_view` — a different resource from the search-term-INSIGHT
+// ones, and the only one that returns raw terms for Performance Max.
+// `search_term_view` returns no PMax data at all; the insight resources return
+// category labels rather than terms. Read with priority over _eng_pmax_cat, which
+// stays readable so an existing sheet keeps rendering something until the Ads
+// script next runs.
+var ENGINE_PMAXTERM_SHEET = '_eng_pmax_term';
 var ENGINE_ITEM_SHEET    = '_eng_item';      // item id × title        (slide 11)
 var ENGINE_ASSET_SHEET   = '_eng_asset';     // sitelinks / assets     (slide 12)
 
@@ -214,8 +222,13 @@ var PRODUCT_ROWS   = 16;   // slide 8  — top product sub-categories
 // single word "shoes" depends on the feed. Set these on the SETTINGS TAB, not
 // here: the Google Ads Script reads the same tab, so one cell changes both sides.
 // `Diagnostics → Show product dimensions` prints what each one actually contains.
-var PRODUCT_DIM_1 = { field: 'product_type_l1',  label: 'Product Type 1' };
-var PRODUCT_DIM_2 = { field: 'product_type_l2',  label: 'Product Type 2' };
+// Custom label 1 × Custom label 4, matching the Google Ads report this slide is
+// modelled on. In this feed label 1 is the category (shoe / boot / sandal) and
+// label 4 is the model (prio / 360 / dillon / scrambler low), which is the
+// breakdown the deck wants. Confirmed against the account's own report, not
+// guessed — `Diagnostics → Show product dimensions` re-checks it against the feed.
+var PRODUCT_DIM_1 = { field: 'product_custom_attribute1', label: 'Custom Label 1' };
+var PRODUCT_DIM_2 = { field: 'product_custom_attribute4', label: 'Custom Label 4' };
 
 /**
  * Every product dimension `shopping_performance_view` can segment by, and the
@@ -282,7 +295,24 @@ function dimByField_(field) {
   return { field: field, label: field };
 }
 
-var PMAX_CAT_ROWS  = 16;   // slide 10 — top PMax search categories
+var PMAX_CAT_ROWS  = 16;   // slide 10 — top PMax non-brand search terms
+
+/**
+ * What counts as a BRAND search term on slide 10.
+ *
+ * Classified on the reading side, not in the Google Ads Script, so changing the
+ * definition is a rebuild rather than a re-run of the MCC feed. The feed stores every
+ * term; this decides which ones the slide excludes.
+ *
+ * Covers the brand name and the misspellings that dominate brand search — "zero
+ * shoes" and "xeroshoes" are the same intent as "xero shoes" and belong with it.
+ *
+ * MODEL NAMES ARE DELIBERATELY NOT HERE. "prio" and "hfs" are Xero products, so a
+ * case can be made either way, but treating them as brand would empty this slide of
+ * exactly the discovery terms it exists to show. The Report tab prints the brand
+ * volume this excludes, so the choice is visible and arguable rather than buried.
+ */
+var BRAND_TERM_RE = /(^|[^a-z])(xero|xeros|zero\s*shoe|xero\s*shoe|xeroshoe)/i;
 var TOP_ITEM_ROWS  = 5;    // slide 11 — product cards
 var PROMO_ROWS     = 3;    // slide 12 — promo sitelinks (a Grand Total row is added)
 
@@ -305,9 +335,12 @@ var HEAD_BG = '#1b2a4a', HEAD_FG = '#ffffff';
 var SUBHEAD_BG = '#eef1f6';
 var NA = 'n/a';                          // rendered when a period has no data
 
+function currencySymbol_() {
+  return CURRENCY === 'EUR' ? '€' : (CURRENCY === 'GBP' ? '£' : '$');
+}
+
 function currencyFormat_(decimals) {
-  var sym = CURRENCY === 'EUR' ? '€' : (CURRENCY === 'GBP' ? '£' : '$');
-  return '"' + sym + '"#,##0' + (decimals ? '.00' : '');
+  return '"' + currencySymbol_() + '"#,##0' + (decimals ? '.00' : '');
 }
 
 
@@ -2640,63 +2673,95 @@ function toRatio_(v) {
 function renderPmaxCategoryBlock_(w, ctx) {
   var month = ctx.periods.current.month;
 
-  // MANUAL FIRST. The search-term-insight resources carry undocumented constraints
-  // that shift between API versions, so the automated query can come back empty
-  // through no fault of the configuration — and the UI panel that has the data has
-  // a Download button. Anything pasted therefore wins: you looked at it.
+  // Sources in priority order: a hand paste, then the search-TERMS tab, then the
+  // legacy search-CATEGORIES tab. The paste wins because if you pasted it you looked
+  // at it; the categories tab is last because it answers a different question and is
+  // only still read so an existing sheet renders something until the MCC script next
+  // runs with the new query.
   var manual = readPmaxManual_(month);
-  var raw = manual.rows.length
-    ? manual.rows
-    : readEngineTab_(ENGINE_PMAXCAT_SHEET).filter(function (r) { return monthOf_(r.month) === month; });
-  var source = manual.rows.length ? 'manual' : (raw.length ? 'api' : 'none');
+  var terms = readEngineTab_(ENGINE_PMAXTERM_SHEET)
+    .filter(function (r) { return monthOf_(r.month) === month; });
+  var cats = readEngineTab_(ENGINE_PMAXCAT_SHEET)
+    .filter(function (r) { return monthOf_(r.month) === month; });
 
-  var groups = groupEngine_(raw, function (r) {
-    var c = String(r.category || '').trim();
-    return c || null;
-  }).sort(byValueDesc_);
+  var raw, source;
+  if (manual.rows.length)   { raw = manual.rows; source = 'manual'; }
+  else if (terms.length)    { raw = terms;       source = 'terms'; }
+  else if (cats.length)     { raw = cats;        source = 'categories'; }
+  else                      { raw = [];          source = 'none'; }
 
-  var rows = groups.map(function (g) {
-    // Search volume is a bucketed RANGE in the UI ("10K-100K"), so it passes
-    // through as text when the source supplies it and as n/a when it does not.
-    var vol = String((g.row && g.row.search_volume) || '').trim();
+  // Group by term, then split brand from non-brand. Brand is QUANTIFIED rather than
+  // just dropped: which terms count as brand is a judgement call, and a slide that
+  // silently discards most of its traffic invites the question. Answer it up front.
+  var all = groupEngine_(raw, function (r) {
+    var t = String(r.search_term !== undefined ? r.search_term : (r.category || '')).trim();
+    return t || null;
+  });
+
+  var nonBrand = [], brandTerms = 0, brandImpr = 0, brandCost = 0;
+  for (var i = 0; i < all.length; i++) {
+    if (BRAND_TERM_RE.test(all[i].key)) {
+      brandTerms++; brandImpr += all[i].impressions; brandCost += all[i].cost;
+    } else {
+      nonBrand.push(all[i]);
+    }
+  }
+
+  // SORTED BY TRAFFIC. A search-terms slide is a discovery artefact — the rows worth
+  // reading are the ones pulling volume, including those converting at zero. Sorting
+  // by conversion value would hide exactly those.
+  nonBrand.sort(function (a, b) { return b.impressions - a.impressions; });
+
+  var rows = nonBrand.map(function (g) {
     return [
       g.key,
-      vol || null,
-      g.conversions, g.clicks, g.impressions, g.conversions_value,
+      g.impressions, g.clicks,
       div_(g.clicks, g.impressions),
-      div_(g.conversions, g.clicks),
+      g.cost, g.conversions, g.conversions_value,
+      div_(g.conversions_value, g.cost),
     ];
   });
 
   var note;
   if (source === 'manual') {
     note = 'Pasted by hand into the "' + PMAXCAT_MANUAL_SHEET + '" tab for ' + month +
-      ' — ' + manual.rows.length + ' row(s). A paste takes priority over the API tab, so this is ' +
-      'what the slide shows even if the automated feed also returned data.' +
+      ' — ' + manual.rows.length + ' row(s). A paste takes priority over the automated tabs, so ' +
+      'this is what the slide shows even if the feed also returned data.' +
       (manual.unmapped.length
         ? '  ⚠  Unrecognised column(s) ignored: ' + manual.unmapped.join(', ') + '.'
         : '');
-  } else if (source === 'api') {
-    note = 'Google Ads search-term-category insights, aggregated across Performance Max campaigns ' +
-      'and sorted by conversions.';
+  } else if (source === 'terms') {
+    note = 'Google Ads campaign_search_term_view, filtered to Performance Max campaigns. That is ' +
+      'the only resource returning RAW search terms for PMax: search_term_view returns no PMax data ' +
+      'at all, and the search-term-INSIGHT resources return category labels rather than terms.';
+  } else if (source === 'categories') {
+    note = '⚠  Showing search CATEGORIES, not terms — the "' + ENGINE_PMAXTERM_SHEET + '" tab is ' +
+      'empty, so this is falling back to the older "' + ENGINE_PMAXCAT_SHEET + '" tab. Re-paste and ' +
+      'Run the MCC Google Ads Script to get actual search terms.';
   } else {
-    note = 'EMPTY. Two ways to fill it:  (1) MANUAL — Google Ads → Campaigns → Insights → ' +
-      '"Search terms insights" → Download, then paste into the "' + PMAXCAT_MANUAL_SHEET + '" tab ' +
-      'with Month as ' + month + '. This always works and is the fastest route.  (2) AUTOMATED — ' +
-      'the MCC script tries several query shapes against customer_search_term_insight and ' +
-      'campaign_search_term_insight; if the tab is still empty, the "_eng_status" tab carries the ' +
-      'exact error Google returned for each shape tried, which is what tells a missing permission ' +
-      'apart from a renamed field.';
+    note = 'EMPTY. Two ways to fill it:  (1) AUTOMATED — re-paste and Run the MCC Google Ads Script. ' +
+      'It queries campaign_search_term_view, which is the resource that actually returns PMax search ' +
+      'terms; if the tab stays empty, "_eng_status" carries Google\'s exact error.  (2) MANUAL — ' +
+      'Google Ads → Campaigns → Insights → search terms → Download, then paste into the "' +
+      PMAXCAT_MANUAL_SHEET + '" tab with Month as ' + month + '.';
+  }
+
+  if (brandTerms) {
+    note += '  Excluded ' + brandTerms + ' brand term(s): ' +
+      Math.round(brandImpr).toLocaleString() + ' impressions, ' +
+      currencySymbol_() + Math.round(brandCost).toLocaleString() + ' cost. Brand is ' +
+      'matched by BRAND_TERM_RE in Config.gs — the brand name and its common misspellings, but ' +
+      'deliberately NOT model names like "prio" or "hfs", since counting those as brand would empty ' +
+      'this slide of the discovery terms it exists to show.';
   }
 
   w.block({
-    name: 'RPT_PMAX_CAT', slide: '10', title: 'Top PMax Search Categories',
-    note: note + '  Search Volume is a bucketed range in the Google Ads UI ("10K-100K"); where it ' +
-      'reads n/a the source did not supply it, and Impr. on the same row is the usable substitute.',
-    header: ['Search Category', 'Search Volume', 'Conversions', 'Clicks', 'Impr.',
-             'Conv. Value', 'CTR', 'Conv. Rate'],
+    name: 'RPT_PMAX_CAT', slide: '10', title: 'Performance Max — Non-Brand Search Terms',
+    note: note + '  Sorted by impressions (traffic), top ' + PMAX_CAT_ROWS + '.',
+    header: ['Search Term', 'Impr.', 'Clicks', 'CTR', 'Cost', 'Conversions', 'Conv. Value', 'ROAS'],
     rows: padRows_(rows, PMAX_CAT_ROWS, 8),
-    colFormats: [null, '#,##0', '#,##0', '#,##0', '#,##0', currencyFormat_(false), '0.00%', '0.00%'],
+    colFormats: [null, '#,##0', '#,##0', '0.00%', currencyFormat_(false), '#,##0',
+                 currencyFormat_(false), '#,##0.00'],
   });
 }
 
@@ -2720,7 +2785,10 @@ function readPmaxManual_(month) {
 
   var ALIASES = {
     month:             ['month', 'reporting month', 'period'],
-    category:          ['search category', 'search categories', 'category', 'search term category',
+    // Slide 10 is a search-TERMS table now, but the category spellings stay: an
+    // export of either shape should land, and both answer "what did PMax show for".
+    category:          ['search term', 'search terms', 'term', 'query', 'search query',
+                        'search category', 'search categories', 'category', 'search term category',
                         'categories', 'search category label', 'category label'],
     search_volume:     ['search volume', 'searches', 'volume', 'monthly searches',
                         'search volume index'],
@@ -2745,9 +2813,9 @@ function readPmaxManual_(month) {
   });
 
   if (!present.category) {
-    // No category column means this is not a search-categories paste. Report it
+    // No term/category column means this is not a search-terms paste. Report it
     // through the note rather than showing an empty slide with no explanation.
-    return { rows: [], unmapped: ['no recognisable "Search category" column — found: ' +
+    return { rows: [], unmapped: ['no recognisable "Search term" column — found: ' +
       Object.keys(raw[0]).join(', ')] };
   }
 
@@ -2950,17 +3018,19 @@ function ensureInputTabs_() {
 
   if (!ss.getSheetByName(PMAXCAT_MANUAL_SHEET)) {
     var m = ss.insertSheet(PMAXCAT_MANUAL_SHEET);
-    var mh = ['Month', 'Search Category', 'Search Volume', 'Impressions', 'Clicks',
+    var mh = ['Month', 'Search Term', 'Search Volume', 'Impressions', 'Clicks',
               'Cost', 'Conversions', 'Conv. Value'];
     m.getRange(1, 1, 1, mh.length).setValues([mh])
       .setFontWeight('bold').setBackground(HEAD_BG).setFontColor(HEAD_FG);
     m.setFrozenRows(1);
-    m.getRange(1, 1).setNote('Slide 10. Google Ads → Campaigns → Insights → "Search terms ' +
-      'insights" → Download, then paste here. Month as yyyy-MM; leave Month empty and the rows ' +
-      'count as the report month.\n\nColumn names are matched loosely, so you can paste the export ' +
-      'with its own headers — only a "Search category" column is required. Anything here takes ' +
-      'PRIORITY over the automated "' + ENGINE_PMAXCAT_SHEET + '" tab.');
-    m.getRange(2, 1, 1, 3).setValues([['', 'Paste your search terms insights export here →', '']])
+    m.getRange(1, 1).setNote('Slide 10 — Performance Max non-brand search terms. Google Ads → ' +
+      'Campaigns → Insights → search terms → Download, then paste here. Month as yyyy-MM; leave ' +
+      'Month empty and the rows count as the report month.\n\nColumn names are matched loosely, so ' +
+      'you can paste the export with its own headers — only a "Search term" column is required ' +
+      '(a "Search category" column is accepted too). Brand terms are filtered out at build time, ' +
+      'so paste everything.\n\nAnything here takes PRIORITY over the automated "' +
+      ENGINE_PMAXTERM_SHEET + '" tab.');
+    m.getRange(2, 1, 1, 3).setValues([['', 'Paste your PMax search terms export here →', '']])
       .setFontColor('#9ca3af').setFontStyle('italic');
     m.getRange(2, 1, 200, 1).setNumberFormat('@');
     for (var c3 = 1; c3 <= mh.length; c3++) m.autoResizeColumn(c3);
@@ -3072,19 +3142,49 @@ function readProductImages_() {
   return out;
 }
 
-/** Titles vary by whitespace and case between the feed and the Ads report. */
+/**
+ * The title match key: lower-cased with every non-alphanumeric character removed.
+ *
+ * Aggressive on purpose. Collapsing whitespace alone is not enough — the Ads report
+ * and the feed disagree about PUNCTUATION, not just spacing, and
+ *
+ *   "HFS Original - Women - Light Gray / Pink Sand"
+ *   "HFS Original - Women - Light Gray/Pink Sand"
+ *
+ * are the same product with different spaces around one slash. Under whitespace-only
+ * normalisation those are different keys, and the image silently fails to resolve.
+ * Stripping punctuation makes both `hfsoriginalwomenlightgraypinksand`.
+ *
+ * Safe to collapse this hard because the title carries the COLOURWAY, so two
+ * genuinely different products cannot normalise to the same key.
+ */
 function normTitle_(t) {
-  return String(t || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  return String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
 /**
- * Resolve one product's image URL. Item id wins over title, because ids are
- * stable and titles get edited.
+ * Resolve one product's image URL. **Title first, item id second.**
+ *
+ * Title wins because of how the feed and the Ads report disagree. A Shopping feed
+ * carries one row per VARIANT (size), each with its own item id, and an
+ * out-of-stock variant drops out of the feed entirely — so the exact id Google Ads
+ * reports may not be in the feed at all. Its sibling sizes are, and they share the
+ * title and therefore the photograph. Matching on the title finds them; matching on
+ * the id gives up.
+ *
+ * This is a change of preference, not of correctness: for IMAGERY the title is the
+ * right key, because everything sharing a title looks identical. Ids stay as the
+ * second try so a hand-pasted id-only row still works.
+ *
+ * Deliberately NOT attempted: matching on the item id's product-level prefix
+ * (`shopify_us_<product>_<variant>` → `shopify_us_<product>`). One Shopify product
+ * can span several colourways, so that would resolve a pink shoe to a grey one —
+ * and the wrong photo beside a product name is worse than a visible gap.
  */
 function productImageUrl_(map, itemId, title) {
-  var byId = map.byId[String(itemId || '').trim().toLowerCase()];
-  if (byId) return byId;
-  return map.byTitle[normTitle_(title)] || '';
+  var byTitle = map.byTitle[normTitle_(title)];
+  if (byTitle) return byTitle;
+  return map.byId[String(itemId || '').trim().toLowerCase()] || '';
 }
 
 // ============================== FEED REFRESH ===============================
@@ -3355,6 +3455,7 @@ function productImageStatus() {
   } else {
     var vals = range.getValues().slice(1);   // [title, item_id, orders, revenue, cost, roas]
     lines.push('Slide 11 products this month:');
+    var misses = [];
     for (var i = 0; i < vals.length; i++) {
       var title = String(vals[i][0] || '').trim();
       var id = String(vals[i][1] || '').trim();
@@ -3362,15 +3463,68 @@ function productImageStatus() {
       var url = productImageUrl_(map, id, title);
       lines.push('  ' + (url ? '✓' : '✗') + '  ' + (title || id).slice(0, 60) +
         (url ? '' : '   ← no image; frame keeps its placeholder'));
+      if (!url) misses.push({ title: title, id: id });
+    }
+
+    // For each miss, show the feed titles that come CLOSEST. A bare "no match" tells
+    // you nothing about whether the product is absent from the feed or merely titled
+    // differently, and those need opposite fixes.
+    if (misses.length) {
+      lines.push('');
+      lines.push('WHY THOSE MISSED — closest titles in the feed:');
+      for (var m = 0; m < misses.length; m++) {
+        lines.push('');
+        lines.push('  ' + (misses[m].title || misses[m].id));
+        lines.push('    looked for key: ' + normTitle_(misses[m].title));
+        var near = nearestFeedTitles_(map, misses[m].title, 3);
+        if (!near.length) {
+          lines.push('    nothing in the feed resembles it — the product is probably absent from ' +
+            'the feed entirely. Paste its image_url into the tab by hand.');
+        } else {
+          for (var n = 0; n < near.length; n++) {
+            lines.push('    ' + near[n].shared + ' chars in common:  ' + near[n].key);
+          }
+          lines.push('    If one of those IS this product, the feed titles it differently — paste ' +
+            'this product\'s image_url by hand.');
+        }
+      }
     }
   }
 
   lines.push('');
-  lines.push('Matching is by item id first, then exact title. A miss usually means the feed uses a ' +
-    'different id format than the Ads report — paste that one product\'s image_url into the tab by ' +
-    'hand and it will stick (manual rows survive every refresh).');
+  lines.push('Matching is by TITLE first, then item id. Title wins because a Shopping feed carries ' +
+    'one row per size variant and an out-of-stock variant drops out of the feed — so the exact id ' +
+    'Google Ads reports may be missing while its sibling sizes, which share the title and the same ' +
+    'photo, are present.');
+  lines.push('');
+  lines.push('A miss you cannot explain: paste that one product\'s image_url into the "' +
+    PRODUCT_IMAGE_SHEET + '" tab by hand. Manual rows survive every refresh, so it sticks.');
 
   tell_('Product image status', lines.join('\n'));
+}
+
+/**
+ * The feed title keys most similar to `title`, by shared leading characters.
+ *
+ * Crude on purpose — this is a diagnostic hint, not a matcher. Comparing normalised
+ * prefixes is enough to tell the two cases apart that need different fixes: "the
+ * feed has this product under a slightly different title" (a long common prefix)
+ * versus "this product is not in the feed at all" (nothing close).
+ */
+function nearestFeedTitles_(map, title, limit) {
+  var want = normTitle_(title);
+  if (!want) return [];
+
+  var scored = [];
+  var keys = Object.keys(map.byTitle);
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i], shared = 0;
+    while (shared < k.length && shared < want.length && k.charAt(shared) === want.charAt(shared)) shared++;
+    // Below ~12 characters in common it is noise, not a near miss.
+    if (shared >= 12) scored.push({ key: k, shared: shared });
+  }
+  scored.sort(function (a, b) { return b.shared - a.shared; });
+  return scored.slice(0, limit);
 }
 
 
@@ -3689,8 +3843,8 @@ function writeDeck_(ctx) {
   catch (e) { skipped.push('slide 3 stat cards: ' + e.message); }
 
   // ---- slide 8 headers, which follow the configured product dimensions ----
-  try { fillProductHeaders_(slides, skipped); }
-  catch (e) { skipped.push('slide 8 headers: ' + e.message); }
+  try { fillTableHeaders_(slides, skipped); }
+  catch (e) { skipped.push('table headers: ' + e.message); }
 
   // ---- slide 11 product cards, with imagery ----
   try { fillProductCards_(slides, skipped); }
@@ -3925,37 +4079,98 @@ function insertProductImage_(slide, frame, url, skipped, label) {
 }
 
 /**
- * Rewrite slide 8's first two header cells to match the data underneath them.
+ * Which deck tables have headers that must FOLLOW the data rather than stay as the
+ * template wrote them, and what heading text the slide should carry.
  *
- * The table writer only fills DATA rows, so without this the deck would keep
- * saying "Product Type (1st)" over columns that now hold Custom Label 1 — a
- * mislabelled column being far worse than an empty one, because nothing looks
- * wrong.
+ *   slide 8  — the two product dimensions are configurable, so "Product Type (1st)"
+ *              over a Custom Label 1 column is a lie the template cannot know about.
+ *   slide 10 — became a non-brand search TERMS table; the template still says
+ *              "Search Categories", which is a different question.
  *
- * The labels come from RPT_PRODUCT's own header row rather than from
- * PRODUCT_DIM_*.label, so they follow renderProductBlock_'s decision about which
- * dimensions the rows actually describe. Two places computing the heading is how
- * they end up disagreeing.
+ * `titleWas` is matched loosely against the slide's text shapes so a heading is only
+ * replaced when it is still the template's original wording.
  */
-function fillProductHeaders_(slides, skipped) {
-  if (slides.length < 8) return;
-  var tables = slides[7].getTables();
-  if (!tables.length) { skipped.push('slide 8: no table found to relabel'); return; }
+function headerPlan_() {
+  return [
+    { slide: 8,  pick: 0, range: 'RPT_PRODUCT',  cols: 2 },
+    { slide: 10, pick: 0, range: 'RPT_PMAX_CAT', cols: 8,
+      titleWas: /search\s*categor/i, titleIs: 'Performance Max  |  Non-Brand Search Terms' },
+  ];
+}
 
-  var block = namedDisplayValues_('RPT_PRODUCT');
-  var labels = (block && block.length && block[0].length >= 2)
-    ? [block[0][0], block[0][1]]
-    : [PRODUCT_DIM_1.label, PRODUCT_DIM_2.label];
+/**
+ * Rewrite header cells (and where needed the slide heading) from the block's own
+ * header row.
+ *
+ * The table writer only fills DATA rows, so without this the deck keeps the
+ * template's headings over columns that now mean something else. A mislabelled
+ * column is far worse than an empty one, because nothing looks wrong.
+ *
+ * Labels come from the RPT_* block's header row rather than being recomputed here,
+ * so they follow whatever the render function decided the rows actually describe.
+ * Two places computing a heading is how they end up disagreeing.
+ */
+function fillTableHeaders_(slides, skipped) {
+  var plan = headerPlan_();
+  for (var p = 0; p < plan.length; p++) {
+    var step = plan[p];
+    if (slides.length < step.slide) continue;
+    var slide = slides[step.slide - 1];
 
-  var table = tables[0];
-  if (table.getNumColumns() < 2) return;
-  try {
-    table.getCell(0, 0).getText().setText(labels[0]);
-    table.getCell(0, 1).getText().setText(labels[1]);
-    progress_('Slide 8: headers set to ' + labels[0] + ' / ' + labels[1] + '.');
-  } catch (e) {
-    skipped.push('slide 8: could not relabel the first two headers — ' + e.message);
+    var block = namedDisplayValues_(step.range);
+    if (!block || !block.length) {
+      skipped.push('slide ' + step.slide + ': ' + step.range + ' is missing, headers left as-is');
+      continue;
+    }
+    var labels = block[0];
+
+    var tables = slide.getTables().slice().sort(function (a, b) { return a.getTop() - b.getTop(); });
+    if (tables.length <= step.pick) {
+      skipped.push('slide ' + step.slide + ': no table to relabel');
+      continue;
+    }
+
+    var table = tables[step.pick];
+    var n = Math.min(step.cols, labels.length, table.getNumColumns());
+    try {
+      for (var c = 0; c < n; c++) {
+        table.getCell(0, c).getText().setText(String(labels[c]));
+      }
+      progress_('Slide ' + step.slide + ': ' + n + ' header(s) set from ' + step.range + '.');
+    } catch (e) {
+      skipped.push('slide ' + step.slide + ': could not relabel headers — ' + e.message);
+    }
+
+    if (step.titleWas) retitleSlide_(slide, step, skipped);
   }
+}
+
+/**
+ * Replace a slide's heading when the template's wording no longer describes the
+ * table under it.
+ *
+ * Only rewrites a shape still carrying the ORIGINAL wording, so running this over an
+ * already-generated deck cannot mangle a heading twice, and a template someone has
+ * retitled by hand is left alone.
+ */
+function retitleSlide_(slide, step, skipped) {
+  var shapes = slide.getShapes(), hit = false;
+  for (var s = 0; s < shapes.length; s++) {
+    var text;
+    try { text = shapes[s].getText().asString(); } catch (e) { continue; }
+    if (!text || !step.titleWas.test(text)) continue;
+    try {
+      shapes[s].getText().setText(step.titleIs);
+      hit = true;
+      progress_('Slide ' + step.slide + ': heading set to "' + step.titleIs + '".');
+      break;
+    } catch (e2) {
+      skipped.push('slide ' + step.slide + ': could not retitle — ' + e2.message);
+      return;
+    }
+  }
+  // Not an error worth flagging loudly: the heading may already read correctly.
+  if (!hit) progress_('Slide ' + step.slide + ': heading already updated or not found; left as-is.');
 }
 
 
@@ -4281,7 +4496,7 @@ function diagCheckSources() {
 
   lines.push('');
   lines.push('GOOGLE ADS ENGINE TABS');
-  var tabs = [ENGINE_DAY_SHEET, ENGINE_PRODUCT_SHEET, ENGINE_PMAXCAT_SHEET,
+  var tabs = [ENGINE_DAY_SHEET, ENGINE_PRODUCT_SHEET, ENGINE_PMAXTERM_SHEET, ENGINE_PMAXCAT_SHEET,
               ENGINE_ITEM_SHEET, ENGINE_ASSET_SHEET, PRODUCT_DIMS_SHEET];
   for (var t = 0; t < tabs.length; t++) {
     var rows = readEngineTab_(tabs[t]);
@@ -4773,6 +4988,38 @@ function checkDeckContract_(t) {
 
   checkProductDims_(t);
   checkLoosePasteParsing_(t);
+  checkBrandTerms_(t);
+}
+
+/**
+ * Slide 10's brand-term filter.
+ *
+ * The regex decides what the slide is ABOUT. Too loose and it strips the discovery
+ * terms the slide exists to show; too tight and brand traffic dominates a table
+ * labelled non-brand. Both failures render perfectly, so pin the boundary.
+ */
+function checkBrandTerms_(t) {
+  var brand = ['xero shoes', 'xeroshoes', 'xero', 'zero shoes', 'zeroshoes',
+               'xero shoes prio', 'buy xero shoes online', 'XERO SHOES'];
+  var nonBrand = ['barefoot shoes', 'minimalist running shoes', 'wide toe box sandals',
+                  'zero drop boots', 'prio', 'hfs womens'];
+
+  var wrong = [];
+  for (var i = 0; i < brand.length; i++) {
+    if (!BRAND_TERM_RE.test(brand[i])) wrong.push('missed brand: "' + brand[i] + '"');
+  }
+  for (var j = 0; j < nonBrand.length; j++) {
+    if (BRAND_TERM_RE.test(nonBrand[j])) wrong.push('wrongly brand: "' + nonBrand[j] + '"');
+  }
+  t.ok('BRAND_TERM_RE splits brand from non-brand', wrong.length === 0, wrong.join('; '));
+
+  // "zero drop" is Xero's own product category and appears in genuine non-brand
+  // queries. A regex matching bare "zero" would swallow it — and swallow the single
+  // most on-topic non-brand term on the slide.
+  t.ok('"zero drop" is not treated as brand', !BRAND_TERM_RE.test('zero drop running shoes'));
+  // Model names stay non-brand, on purpose and by decision — assert it so the choice
+  // cannot drift silently.
+  t.ok('model names stay non-brand', !BRAND_TERM_RE.test('prio') && !BRAND_TERM_RE.test('hfs'));
 }
 
 /**
@@ -5428,10 +5675,11 @@ function createInputTabs() {
     'Created (or confirmed) three hand-fed tabs:\n\n' +
     '· "' + AUCTION_SHEET + '" — paste your Auction Insights export here. No Google API exposes ' +
     'this data, so slide 9\'s competitor block cannot be automated.\n\n' +
-    '· "' + PMAXCAT_MANUAL_SHEET + '" — slide 10. Google Ads → Campaigns → Insights → "Search terms ' +
-    'insights" → Download, then paste. Column names are matched loosely, so the export\'s own ' +
-    'headers are fine. A paste here takes PRIORITY over the automated feed, which is the reliable ' +
-    'way to fill slide 10 — the API\'s search-term-insight resources are inconsistently available.\n\n' +
+    '· "' + PMAXCAT_MANUAL_SHEET + '" — slide 10, Performance Max non-brand search terms. The MCC ' +
+    'script now fills this automatically from campaign_search_term_view, so this tab is a FALLBACK: ' +
+    'Google Ads → Campaigns → Insights → search terms → Download, then paste. Column names are ' +
+    'matched loosely, so the export\'s own headers are fine, and brand terms are filtered out at ' +
+    'build time so you can paste everything. A paste takes PRIORITY over the automated tab.\n\n' +
     '· "' + PROMO_SHEET + '" — list promo windows (name, start, end). Slide 12 measures any promo ' +
     'overlapping the report month.');
 }
@@ -5473,7 +5721,7 @@ function firstRunCheck() {
     }
   }
 
-  var engTabs = [ENGINE_DAY_SHEET, ENGINE_PRODUCT_SHEET, ENGINE_PMAXCAT_SHEET,
+  var engTabs = [ENGINE_DAY_SHEET, ENGINE_PRODUCT_SHEET, ENGINE_PMAXTERM_SHEET,
                  ENGINE_ITEM_SHEET, ENGINE_ASSET_SHEET];
   var present = [], missing = [];
   for (var i = 0; i < engTabs.length; i++) {
@@ -5496,12 +5744,16 @@ function firstRunCheck() {
       're-paste and Run the MCC script to have it probe every dimension.');
   }
 
-  if (!readEngineTab_(PMAXCAT_MANUAL_SHEET).length && !readEngineTab_(ENGINE_PMAXCAT_SHEET).length) {
-    notes.push('Slide 10 has no data from either source. The reliable route is the paste: Google Ads ' +
-      '→ Campaigns → Insights → "Search terms insights" → Download → paste into the "' +
-      PMAXCAT_MANUAL_SHEET + '" tab (Setup → Create the manual input tabs creates it). Google\'s ' +
-      'search-term-insight API resources are not consistently available, so the automated feed can ' +
-      'come back empty with nothing wrong at your end.');
+  var termRows = readEngineTab_(ENGINE_PMAXTERM_SHEET).length;
+  if (!termRows && !readEngineTab_(PMAXCAT_MANUAL_SHEET).length) {
+    notes.push('Slide 10 (PMax non-brand search terms) has no data. Re-paste and Run the MCC Google ' +
+      'Ads Script — it queries campaign_search_term_view, the only resource that returns raw search ' +
+      'terms for Performance Max. If "' + ENGINE_PMAXTERM_SHEET + '" stays empty, "_eng_status" ' +
+      'carries Google\'s exact error. Fallback: paste the UI export into the "' +
+      PMAXCAT_MANUAL_SHEET + '" tab.');
+  } else if (!termRows && readEngineTab_(ENGINE_PMAXCAT_SHEET).length) {
+    notes.push('Slide 10 is falling back to the older "' + ENGINE_PMAXCAT_SHEET + '" tab, which holds ' +
+      'search CATEGORIES rather than terms. Re-paste and Run the MCC script to get actual terms.');
   }
 
   if (!DECK_TEMPLATE_ID) {

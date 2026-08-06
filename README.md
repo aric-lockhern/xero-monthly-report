@@ -15,7 +15,7 @@ The framework deck is `template/Xero_Shoes_Monthly_Reporting_Framework.pptx`.
           │                                  │
           │  _store tab                      │  writes _eng_* tabs
           │  (Date × Channel × Campaign,     │  (product taxonomy, PMax search
-          │   raw summed components)         │   categories, item revenue,
+          │   raw summed components)         │   terms, item revenue,
           │                                  │   sitelinks, impression share)
           ▼                                  ▼
        ┌────────────────────────────────────────────┐
@@ -75,11 +75,11 @@ block explaining each one.
 | 5 Search / Shopping | Triple Whale + classification | automated |
 | 6 Search brand vs. non-brand | Triple Whale + classification | automated |
 | 7 Shopping brand vs. non-brand | Triple Whale + classification | automated |
-| 8 Product category | Google Ads `shopping_performance_view` | automated — pick the two dimensions once, on the `Settings` tab |
+| 8 Product category | Google Ads `shopping_performance_view` | automated — Custom label 1 × Custom label 4, changeable on the `Settings` tab |
 | 9 Brand impression share (ours) | Google Ads `search_impression_share` | automated |
 | 9 Auction insights (competitors) | — | **manual paste — no API exists** |
-| 10 PMax search categories | `PMax Categories` paste, else Google Ads search-term insights | paste wins — the API resources are unreliable (GAPS §4) |
-| 11 Top products | Google Ads item-level | automated, images from your Shopping feed |
+| 10 PMax non-brand search terms | Google Ads `campaign_search_term_view` | automated, sorted by traffic; brand excluded on the reading side |
+| 11 Top products | Google Ads item-level | automated, images matched from your Shopping feed by title |
 | 12 Promotion recap | Triple Whale + Google Ads assets | automated (needs promo dates on the `Promos` tab) |
 | 13 ChatGPT Ads | Triple Whale `openai-ads` | automated |
 | 3/4–7/12 narrative bullets | you | manual, deliberately |
@@ -113,7 +113,7 @@ To test against the real numbers instead, export the Triple Whale `_store` tab
 are gitignored.
 
 ```
-✓ all 166 invariants hold.
+✓ all 169 invariants hold.
 ```
 
 `tools/harness.js` loads the real `apps-script/*.gs` into a sandbox with the
