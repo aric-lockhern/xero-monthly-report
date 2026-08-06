@@ -30,22 +30,38 @@ Then Project Settings → **check "Show appsscript.json"**, and paste in
 > Time zone must match the Triple Whale project — `America/New_York` — or month
 > boundaries can disagree by a day between the two sheets.
 
-### A3. Configure
+### A3. Configure — on the `Settings` TAB, not in the code
 
-In `Config.gs`, at minimum:
+Reload the spreadsheet, then **`Monthly Report → Setup → Settings`**. That creates
+a `Settings` tab and shows the values currently in effect.
 
-```js
-var REGION = 'US';                    // or 'EU'
-var CURRENCY = 'USD';                 // or 'EUR'
-var TW_SPREADSHEET_ID = '1AbC…';      // the ld-x-tw-script spreadsheet
-```
+Edit the **Value** column:
 
-Get `TW_SPREADSHEET_ID` from the Triple Whale sheet's URL:
-`docs.google.com/spreadsheets/d/`**`THIS_PART`**`/edit`.
+| Setting | Value |
+|---|---|
+| `TW_SPREADSHEET_ID` | US `1TK1xPqrwf4Zr1_DA7GcYVDf-sXKKagla-sS_hs631Cs` · EU `1Qf-YpWXlOLUhSdLE6E1PZ1W37lDH1JPbc-ancEF5w8w` |
+| `REGION` | `US` or `EU` |
+| `CURRENCY` | `USD` or `EUR` |
+| `REPORT_MONTH` | leave **empty** for the last complete month |
 
-The account running this script needs at least **view** access to that sheet.
+Nothing to save beyond the cell — the next build reads it.
 
-Leave `REPORT_MONTH = ''` so scheduled runs always report the last complete month.
+> **Why a tab and not `Config.gs`?** Pasting an updated `dist/Code.gs` replaces the
+> entire Apps Script project, `Config.gs` included, so anything typed into the code
+> is wiped on every update — and the symptom appears a step removed from the cause
+> ("Deck generation skipped (DECK_TEMPLATE_ID is not set)"). The Settings tab lives
+> in the spreadsheet and survives code updates.
+>
+> `Config.gs` still holds every constant and those remain the defaults; a non-empty
+> cell on the tab overrides one. Things that are genuine code changes —
+> classification rules, deck row counts, column order — stay in `Config.gs`, where
+> the self-test checks them.
+
+An invalid value is reported and **ignored**, falling back to the `Config.gs`
+default, rather than being applied.
+
+The account running this script needs at least **view** access to the Triple Whale
+sheet.
 
 ### A4. First-run check
 
@@ -96,15 +112,25 @@ attributing late orders to renamed or paused campaigns.
 
 ### A7. The deck (optional)
 
-`SlidesApp` can only write to native Google Slides, so convert the template once:
+`SlidesApp` can only write to native Google Slides, so the template must be a
+Slides file, not a `.pptx`.
 
-1. Upload `template/Xero_Shoes_Monthly_Reporting_Framework.pptx` to Drive.
-2. Open it → **File → Save as Google Slides**. This makes a *new* file.
-3. Copy that new file's ID into `DECK_TEMPLATE_ID` in `Config.gs`.
-   Optionally set `DECK_OUTPUT_FOLDER_ID` for where generated decks land.
+**Easiest:** `Monthly Report → Setup → Find the deck template in Drive`. It
+searches for a Google Slides file with "Reporting Framework" in the title and
+writes the id to the `Settings` tab for you. If several match it lists them for you
+to pick.
 
-> Use the **converted** file's ID, not the uploaded `.pptx`'s. `First-run check`
-> will tell you if you got this wrong.
+**If none is found**, convert it once: upload
+`template/Xero_Shoes_Monthly_Reporting_Framework.pptx` to Drive, open it, **File →
+Save as Google Slides** — that makes a *new* file — and put that new file's id in
+`DECK_TEMPLATE_ID` on the `Settings` tab.
+
+> Use the **converted** file's id, never the `.pptx`'s, and always the **pristine**
+> template rather than a previously generated deck: the slide-3 stat cards are
+> matched by their `$—` placeholders and only fill on an untouched template.
+>
+> The template is **copied, never modified** — `writeDeck_` calls `makeCopy()` and
+> throws if the copy's id ever equals the template's.
 
 Then `Diagnostics → Validate the deck template`. It checks every table's
 dimensions against the block that feeds it. A mismatched table is **skipped** at

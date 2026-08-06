@@ -9,6 +9,7 @@
  */
 
 function diagCheckSources() {
+  applySettings_();
   var lines = [];
 
   try {
@@ -54,6 +55,7 @@ function diagCheckSources() {
 }
 
 function diagCoverage() {
+  applySettings_();
   var periods = resolvePeriods_();
   var tw = readTripleWhale_();
   var eng = readEngineDays_();
@@ -91,6 +93,7 @@ function diagCoverage() {
 }
 
 function diagClassification() {
+  applySettings_();
   var ctx = buildReportContext_();
   var rows = rowsInPeriod_(ctx.twAds, ctx.periods.current);
 
@@ -121,6 +124,7 @@ function diagClassification() {
 }
 
 function diagUnclassified() {
+  applySettings_();
   var ctx = buildReportContext_();
   var rows = rowsInPeriod_(ctx.twAds, ctx.periods.current);
 
@@ -159,7 +163,12 @@ function diagUnclassified() {
 }
 
 function diagValidateDeck() {
-  if (!DECK_TEMPLATE_ID) { tell_('Deck template', 'DECK_TEMPLATE_ID is not set in Config.gs.'); return; }
+  applySettings_();
+  if (!DECK_TEMPLATE_ID) {
+    tell_('Deck template', 'DECK_TEMPLATE_ID is not set. Run Setup → Find the deck template in ' +
+      'Drive, or set it by hand on the "' + SETTINGS_SHEET + '" tab.');
+    return;
+  }
 
   var deck;
   try { deck = SlidesApp.openById(DECK_TEMPLATE_ID); }
@@ -201,6 +210,7 @@ function diagValidateDeck() {
 }
 
 function diagNamedRanges() {
+  applySettings_();
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var ranges = ss.getNamedRanges().filter(function (r) { return r.getName().indexOf('RPT_') === 0; });
   if (!ranges.length) { tell_('Named ranges', 'None yet — run "Build report" first.'); return; }

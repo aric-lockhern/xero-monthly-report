@@ -55,17 +55,24 @@ function slidePlan_() {
 // ============================== ENTRY POINT ================================
 
 function buildDeck() {
+  applySettings_();
   var ctx = buildReportContext_();
   renderReportTab_(ctx);
   renderCampaignMap_(ctx.mapRows, ctx.classify);
   var url = writeDeck_(ctx);
-  tell_('Deck ready', url ? url : 'Deck generation skipped (DECK_TEMPLATE_ID is not set in Config.gs).');
+  tell_('Deck ready', url ? url :
+    'Deck generation skipped — DECK_TEMPLATE_ID is not set.\n\n' +
+    'Fix it with  Setup → Find the deck template in Drive,  which locates your converted Google ' +
+    'Slides deck and writes the id to the "' + SETTINGS_SHEET + '" tab.\n\n' +
+    'Set it on that tab, NOT in Config.gs: pasting an updated dist/Code.gs replaces the whole Apps ' +
+    'Script project, so a value typed into the code is lost on every update. The Settings tab ' +
+    'survives.\n\nThe Report tab was still built, so no work is lost.');
   return url;
 }
 
 function writeDeck_(ctx) {
   if (!DECK_TEMPLATE_ID) {
-    progress_('DECK_TEMPLATE_ID is not set — Report tab built, deck skipped.');
+    progress_('DECK_TEMPLATE_ID is not set (see the ' + SETTINGS_SHEET + ' tab) — Report tab built, deck skipped.');
     return '';
   }
 

@@ -4,6 +4,16 @@
  * Every knob lives here. Nothing else in the project should hold a constant you
  * might want to change per region or per month.
  *
+ * DO NOT EDIT THE PER-DEPLOYMENT IDs HERE — use the `Settings` TAB instead.
+ * Pasting a new dist/Code.gs replaces this whole file, so anything typed here is
+ * lost on every code update. The Settings tab lives in the spreadsheet and
+ * survives that; a non-empty value there overrides the constant below.
+ * Run: Monthly Report → Setup → Settings.
+ *
+ * These values remain the defaults, and everything NOT on the Settings tab —
+ * classification rules, deck row counts, column order — is a genuine code change
+ * and belongs here.
+ *
  * ONE SHEET PER REGION. Deploy this project twice — once bound to the US
  * reporting spreadsheet, once to the EU one — and change REGION +
  * TW_SPREADSHEET_ID + DECK_TEMPLATE_ID below. That mirrors how the Triple Whale

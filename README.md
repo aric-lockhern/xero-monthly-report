@@ -133,7 +133,9 @@ Staged go-live ladder: [`docs/DEPLOY.md`](docs/DEPLOY.md). Reference detail:
 1. `npm test` locally (above) — no deploy needed.
 2. Create the reporting spreadsheet, `cp .clasp.json.example .clasp.json`, set the
    Script ID, `npm run push`.
-3. Fill in `Config.gs` — at minimum `TW_SPREADSHEET_ID` and `REGION`.
+3. `Monthly Report → Setup → Settings` — fill in `TW_SPREADSHEET_ID` and `REGION`
+   on the `Settings` **tab**. Not in `Config.gs`: pasting an updated `dist/Code.gs`
+   replaces the whole project, so values in the code are lost on every update.
 4. `Monthly Report → Setup → First-run check`. It verifies every prerequisite and
    tells you exactly what to fix.
 5. `Monthly Report → Build report`, then `Diagnostics → Run self-test`. Check the
@@ -160,7 +162,9 @@ Cell-by-cell provenance: [`docs/DATA-DICTIONARY.md`](docs/DATA-DICTIONARY.md).
 
 ```
 apps-script/            bound to the reporting spreadsheet
-  Config.gs             every knob — region, sources, classification rules
+  Config.gs             every knob — defaults for everything below
+  Settings.gs           per-deployment settings on a spreadsheet TAB, so they
+                        survive pasting an updated dist/Code.gs
   Metrics.gs            the measurement contract: components in, ratios out
   Ingest.gs             read Triple Whale + engine tabs; period/date math
   Classify.gs           campaign → tactic / brand, with manual overrides

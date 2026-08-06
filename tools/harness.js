@@ -43,7 +43,7 @@ const vm = require('vm');
 const SRC_DIR = path.join(__dirname, '..', 'apps-script');
 // Config first so its top-level vars exist; the rest share one global scope, as
 // they do in Apps Script itself.
-const LOAD_ORDER = ['Config', 'Metrics', 'Util', 'Ingest', 'Classify', 'Report',
+const LOAD_ORDER = ['Config', 'Settings', 'Metrics', 'Util', 'Ingest', 'Classify', 'Report',
                     'ReportDetail', 'Slides', 'Webhook', 'Diagnostics', 'SelfTest', 'Code'];
 
 // ============================== ARGS ======================================
@@ -284,6 +284,21 @@ const activeSpreadsheet = {
   })),
 };
 
+// A Settings tab, so the override path is exercised rather than assumed. The
+// values deliberately differ from the Config.gs defaults.
+sheets['Settings'] = mockSheet('Settings', [
+  ['Setting', 'Value', 'What it is'],
+  ['TW_SPREADSHEET_ID', 'HARNESS', ''],
+  ['DECK_TEMPLATE_ID', 'HARNESS_DECK_ID', ''],
+  ['DECK_OUTPUT_FOLDER_ID', '', ''],
+  ['REGION', ARGS.region, ''],
+  ['CURRENCY', ARGS.region === 'EU' ? 'EUR' : 'USD', ''],
+  ['REPORT_MONTH', ARGS.month, ''],
+  ['CVR_BASIS', 'clicks', ''],
+  ['TW_SESSION_FIELD', '', ''],
+  ['BOGUS_KEY', 'ignored', ''],
+]);
+
 const twStoreSheet = mockSheet('_store', loadStore(ARGS.store));
 
 const SpreadsheetApp = {
@@ -435,6 +450,11 @@ console.log(HR);
 
 let ctx;
 try {
+  // Overlay the Settings tab exactly as every entry point does.
+  const settingsResult = vm.runInContext('applySettings_()', context);
+  if (!ARGS.quiet && settingsResult) {
+    console.log(`  settings applied from tab: ${(settingsResult.applied || []).join(', ') || 'none'}`);
+  }
   ctx = vm.runInContext('buildReportContext_()', context);
   sandbox.__ctx = ctx;
   vm.runInContext('renderReportTab_(__ctx)', context);

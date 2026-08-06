@@ -34,6 +34,7 @@ var PCT_FORMAT = '+0.0%;-0.0%;0.0%';
 // ============================== ENTRY POINT ================================
 
 function buildReport() {
+  applySettings_();
   var ctx = buildReportContext_();
   renderReportTab_(ctx);
   renderCampaignMap_(ctx.mapRows, ctx.classify);

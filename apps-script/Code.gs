@@ -18,7 +18,9 @@
  * → Slides deck. Every ratio is derived from summed components at render time,
  * never averaged, so no two blocks can disagree.
  *
- * SETUP: docs/SETUP.md.  Fill in Config.gs, then run Setup → First-run check.
+ * SETUP: docs/SETUP.md.  Run Setup → Settings to fill in the ids, then
+ * Setup → First-run check. Settings live on a spreadsheet TAB, not in Config.gs,
+ * so pasting an updated dist/Code.gs never disturbs them.
  *
  * Lockhern Digital — internal reporting tool.
  */
@@ -34,6 +36,9 @@ function onOpen() {
     .addItem('Report a specific month…', 'buildForMonthPrompt')
     .addSeparator()
     .addSubMenu(ui.createMenu('Setup')
+      .addItem('Settings (IDs, region, month)', 'openSettings')
+      .addItem('Find the deck template in Drive', 'findDeckTemplate')
+      .addSeparator()
       .addItem('First-run check (verify config + sources)', 'firstRunCheck')
       .addItem('Create the manual input tabs', 'createInputTabs')
       .addSeparator()
@@ -63,6 +68,7 @@ function onOpen() {
  * deck if a template is configured.
  */
 function monthlyRun() {
+  applySettings_();
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(30000)) { progress_('Monthly run: another run holds the lock — skipping.'); return; }
   try {
@@ -84,6 +90,7 @@ function monthlyRun() {
 
 /** buildDeck without the UI alert, for trigger use. */
 function buildDeck_headless_() {
+  applySettings_();
   var ctx = buildReportContext_();
   renderReportTab_(ctx);
   renderCampaignMap_(ctx.mapRows, ctx.classify);
@@ -92,9 +99,10 @@ function buildDeck_headless_() {
 
 /** Build for an arbitrary month without editing Config.gs. */
 function buildForMonthPrompt() {
+  applySettings_();
   var answer = ask_('Report a specific month',
     'Enter the month as yyyy-MM (e.g. 2026-07).\n\n' +
-    'This affects THIS RUN ONLY — Config.gs is not modified. Leave blank to use ' +
+    'This affects THIS RUN ONLY — nothing is saved. Leave blank to use ' +
     (REPORT_MONTH || 'the last complete month') + '.');
   if (answer === null) return;
 
@@ -109,7 +117,8 @@ function buildForMonthPrompt() {
       tell_('Deck ready', url);
     } else {
       buildReport();
-      tell_('Report built', 'DECK_TEMPLATE_ID is not set in Config.gs, so no deck was generated.');
+      tell_('Report built', 'DECK_TEMPLATE_ID is not set, so no deck was generated. Run Setup → ' +
+        'Find the deck template in Drive.');
     }
   } finally {
     REPORT_MONTH = saved;
@@ -117,6 +126,7 @@ function buildForMonthPrompt() {
 }
 
 function createInputTabs() {
+  applySettings_();
   ensureInputTabs_();
   tell_('Input tabs ready',
     'Created (or confirmed) two hand-fed tabs:\n\n' +
@@ -133,11 +143,15 @@ function createInputTabs() {
  * what to fix. Cheap to run, and the fastest way to diagnose a broken setup.
  */
 function firstRunCheck() {
+  ensureSettingsTab_();
+  applySettings_();
   var problems = [], notes = [];
+  notes.push('Settings come from the "' + SETTINGS_SHEET + '" tab, which survives code updates. ' +
+    'Edit values there, not in Config.gs.');
 
   if (!TW_SPREADSHEET_ID) {
-    problems.push('Config.gs: TW_SPREADSHEET_ID is empty. Paste the ID of the Triple Whale ' +
-      'reporting spreadsheet (from its URL, between /d/ and /edit).');
+    problems.push('TW_SPREADSHEET_ID is empty. Set it on the "' + SETTINGS_SHEET + '" tab — the ' +
+      'id is in that spreadsheet\'s URL, between /d/ and /edit.');
   } else {
     try {
       var tw = readTripleWhale_();
@@ -148,7 +162,8 @@ function firstRunCheck() {
         ',  ' + periods.prior.shortLabel + ': ' + (cov.prior ? 'yes' : 'NO') +
         ',  ' + periods.yoy.shortLabel + ' (YoY): ' + (cov.yoy ? 'yes' : 'NO') + '.');
       if (!cov.current) problems.push('Triple Whale has no data for the month being reported (' +
-        periods.current.label + '). Sync that sheet, or set REPORT_MONTH in Config.gs.');
+        periods.current.label + '). Sync that sheet, or set REPORT_MONTH on the "' +
+        SETTINGS_SHEET + '" tab.');
       if (!cov.yoy) notes.push('No year-ago Triple Whale data → %YoY will read n/a for the Triple ' +
         'Whale columns. Lower BACKFILL_START in ld-x-tw-script to ' + periods.yoy.start + ' to fix.');
       if (!tw.sessionsAvailable) notes.push('No sessions column → "TW Sessions" reads n/a and TW CVR ' +
@@ -170,8 +185,9 @@ function firstRunCheck() {
 
   if (!DECK_TEMPLATE_ID) {
     notes.push('DECK_TEMPLATE_ID is empty → the Report tab is built but no deck is generated. ' +
-      'Upload template/Xero_Shoes_Monthly_Reporting_Framework.pptx to Drive, open it, save it as ' +
-      'Google Slides, and paste that file ID into Config.gs.');
+      'Fix it with Setup → Find the deck template in Drive, which locates the converted Slides ' +
+      'file and writes the id to the "' + SETTINGS_SHEET + '" tab for you. Setting it in Config.gs ' +
+      'instead would be lost the next time you paste an updated dist/Code.gs.');
   } else {
     try {
       var deck = SlidesApp.openById(DECK_TEMPLATE_ID);
@@ -199,6 +215,7 @@ function firstRunCheck() {
 var MONTHLY_DAY = 3, MONTHLY_HOUR = 7;
 
 function setupAutomation() {
+  applySettings_();
   removeTriggersFor_('monthlyRun');
   ScriptApp.newTrigger('monthlyRun').timeBased().onMonthDay(MONTHLY_DAY).atHour(MONTHLY_HOUR).create();
   ensureInputTabs_();

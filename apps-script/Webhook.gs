@@ -67,6 +67,7 @@ function doGet() {
 }
 
 function handlePost_(e) {
+  applySettings_();
   if (!e || !e.postData || !e.postData.contents) {
     return { ok: false, error: 'No POST body.' };
   }
@@ -242,6 +243,7 @@ function setupBingWebhook() {
 
 /** Confirm what the receiver currently holds. */
 function bingWebhookStatus() {
+  applySettings_();
   var props = PropertiesService.getScriptProperties();
   var hasSecret = !!props.getProperty(WEBHOOK_SECRET_PROP);
   var rows = readEngineTab_(ENGINE_WEBHOOK_SHEET);

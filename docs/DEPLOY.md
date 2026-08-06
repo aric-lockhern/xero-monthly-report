@@ -94,13 +94,12 @@ OAuth scopes).
 > tick Project Settings → "Show appsscript.json" and paste that in. It works, it's
 > just tedious, and every later fix is tedious again.
 
-Then edit `Config.gs` — in the editor or locally followed by `npm run push`:
+Then configure on the **`Settings` tab**, not in the code:
+`Monthly Report → Setup → Settings`.
 
-```js
-var REGION = 'US';
-var CURRENCY = 'USD';
-var TW_SPREADSHEET_ID = '1AbC…';   // the ld-x-tw-script spreadsheet
-```
+> Settings live in the spreadsheet because pasting an updated `dist/Code.gs`
+> replaces the whole project including `Config.gs`. A value typed into the code is
+> lost on every update; a value on the tab survives.
 
 ---
 
@@ -144,7 +143,8 @@ paste straight into the deck.
 
 1. Upload `template/Xero_Shoes_Monthly_Reporting_Framework.pptx` to Drive.
 2. Open it → **File → Save as Google Slides**. This creates a *new* file.
-3. Put that new file's ID in `DECK_TEMPLATE_ID`. **Not** the uploaded `.pptx`'s.
+3. Put that new file's ID in `DECK_TEMPLATE_ID` on the **`Settings` tab**. **Not**
+   the uploaded `.pptx`'s. Or just run `Setup → Find the deck template in Drive`.
 
 `Diagnostics → Validate the deck template` checks all eleven tables against the
 blocks that feed them. **This is the one check the local harness cannot do** — it

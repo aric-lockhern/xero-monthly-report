@@ -33,6 +33,7 @@ function runSelfTest() {
  * computation rather than against cached intermediates.
  */
 function selfTestReport_() {
+  applySettings_();
   var t = newAsserter_();
   var ctx = buildReportContext_();
 
