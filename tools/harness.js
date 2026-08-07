@@ -178,6 +178,10 @@ const Logger = { log: (m) => statusLog.push(String(m)) };
 const sheets = {};
 const namedRanges = {};
 
+// Every chart inserted on any sheet, so a test can assert what was built rather than
+// only that nothing threw. Per-sheet `charts` stays for getCharts().
+const allCharts = [];
+
 function mockSheet(name, grid) {
   const data = grid ? grid.map(r => r.slice()) : [];
   const charts = [];
@@ -194,7 +198,7 @@ function mockSheet(name, grid) {
     clearNotes: () => self,
     getCharts: () => charts,
     removeChart: () => self,
-    insertChart: (c) => { charts.push(c); return self; },
+    insertChart: (c) => { charts.push(c); allCharts.push(c); return self; },
     newChart: () => chartBuilder(),
     setFrozenRows: () => self, setFrozenColumns: () => self,
     setColumnWidth: () => self, autoResizeColumn: () => self,
@@ -203,10 +207,31 @@ function mockSheet(name, grid) {
   return self;
 }
 
+/**
+ * EmbeddedChartBuilder. Records what it was told, so a chart can be asserted on rather
+ * than merely not crashing.
+ *
+ * Every method here exists on the real builder. Only these are stubbed, and calling
+ * anything else THROWS on purpose — the same discipline as the removeNamedRange stub:
+ * a stub more forgiving than the API it stands in for is how a break reaches
+ * production, since the harness passes and the live run does not.
+ */
 function chartBuilder() {
-  const b = {};
-  ['asLineChart', 'addRange', 'setNumHeaders', 'setPosition', 'setOption'].forEach(m => { b[m] = () => b; });
-  b.build = () => ({ chart: true });
+  const spec = { options: {}, ranges: 0, transposed: false, headers: 0 };
+  const b = { _spec: spec };
+  ['asLineChart', 'asColumnChart', 'asBarChart', 'asPieChart', 'asScatterChart',
+   'asAreaChart', 'asTableChart', 'setChartType', 'setHiddenDimensionStrategy',
+   'setMergeStrategy', 'setXAxisTitle', 'setYAxisTitle', 'setTitle', 'setColors',
+   'setLegendPosition', 'setBackgroundColor', 'setCurveStyle', 'setPointStyle',
+   'setStacked', 'reverseCategories', 'clearRanges', 'removeRange',
+  ].forEach(m => { b[m] = () => b; });
+
+  b.addRange = (r) => { spec.ranges++; spec.range = r; return b; };
+  b.setNumHeaders = (n) => { spec.headers = n; return b; };
+  b.setPosition = (row, col) => { spec.row = row; spec.col = col; return b; };
+  b.setOption = (k, v) => { spec.options[k] = v; return b; };
+  b.setTransposeRowsAndColumns = (v) => { spec.transposed = !!v; return b; };
+  b.build = () => ({ chart: true, spec: spec });
   return b;
 }
 
@@ -302,6 +327,55 @@ sheets['Settings'] = mockSheet('Settings', [
   ['PRODUCT_DIM_1', 'Custom label 2', ''],
   ['PRODUCT_DIM_2', 'l1', ''],
   ['BOGUS_KEY', 'ignored', ''],
+]);
+
+// Auction insights, WEEKLY, verbatim in the export's own shape: the export's headers,
+// M/D/YYYY week-start dates, Google's "< 10%" floor, its " --" for not-applicable, and
+// the "You" row. Dates are chosen against the report month the harness uses:
+//   2026-06-29  straddles June/July — must appear in BOTH months, not be dropped
+//   2026-07-13  squarely inside July
+//   2026-07-20  ditto, and amazon.com climbs across the three, which is the point of
+//               pulling weekly at all
+// Week starts derived from the report month rather than hardcoded, so the assertions
+// below hold whatever month the harness runs against.
+//   AUCTION_WEEKS[0]  the Monday on or before the 1st, guaranteed to STRADDLE the
+//                     month boundary — it must appear in this month, not be dropped
+//   AUCTION_WEEKS[1]  and [2] squarely inside the month
+const AUCTION_WEEKS = (() => {
+  const [Y, M] = (ARGS.month || defaultMonth()).split('-').map(Number);
+  const first = new Date(Y, M - 1, 1);
+  const back = (first.getDay() + 6) % 7;            // 0 = Monday
+  const straddle = new Date(Y, M - 1, 1 - (back === 0 ? 7 : back));
+  const plus = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+  return [straddle, plus(straddle, 14), plus(straddle, 21)];
+})();
+// M/D/YYYY, exactly as the Google Ads export writes it.
+const usDate = (d) => `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
+const isoDate = (d) =>
+  `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const [W0, W1, W2] = AUCTION_WEEKS;
+
+sheets['Auction Insights'] = mockSheet('Auction Insights', [
+  ['Week', 'Display URL domain', 'Impression share', 'Overlap rate', 'Position above rate',
+   'Top of page rate', 'Abs. Top of page rate', 'Outranking share'],
+  ['', 'Paste your weekly auction insights export here →', '', '', '', '', '', ''],
+
+  [usDate(W0), 'amazon.com',       '22.10%', '30.00%', '34.00%', '82.00%', '25.00%', '14.00%'],
+  [usDate(W0), 'You',              '24.00%', ' --',    ' --',    '75.00%', '41.00%', ' --'],
+  [usDate(W0), 'vivobarefoot.com', '15.00%', '34.00%', '48.00%', '77.00%', '27.00%', '14.00%'],
+
+  [usDate(W1), 'amazon.com',       '28.23%', '31.50%', '35.37%', '83.92%', '27.68%', '15.72%'],
+  [usDate(W1), 'You',              '17.69%', ' --',    ' --',    '76.06%', '43.43%', ' --'],
+  [usDate(W1), 'vivobarefoot.com', '14.27%', '35.66%', '49.85%', '77.66%', '28.52%', '14.55%'],
+  [usDate(W1), 'bearefoot.com',    '10.66%', '17.42%', '53.30%', '81.64%', '44.83%', '16.05%'],
+  [usDate(W1), 'hobibear.com',     '< 10%',  '8.87%',  '39.95%', '64.61%', '29.09%', '17.06%'],
+
+  [usDate(W2), 'amazon.com',       '31.00%', '32.00%', '36.00%', '84.00%', '28.00%', '16.00%'],
+  [usDate(W2), 'You',              '17.10%', ' --',    ' --',    '76.50%', '43.00%', ' --'],
+  [usDate(W2), 'vivobarefoot.com', '13.90%', '36.00%', '50.00%', '78.00%', '29.00%', '15.00%'],
+
+  // A week well outside the report month — must not leak in.
+  ['1/5/2001', 'amazon.com', '9.00%', '10.00%', '11.00%', '12.00%', '13.00%', '14.00%'],
 ]);
 
 // Slide 10's manual paste, headed the way a Google Ads export is — NOT the way the
@@ -542,6 +616,20 @@ console.log(`  store   ${ARGS.store}`);
 console.log(`  region  ${ARGS.region}      month  ${ARGS.month || '(last complete)'}`);
 console.log(`  engine  ${ARGS.engine || 'not injected — slides 8-12 will be empty'}`);
 console.log(HR);
+
+// Lets a test swap the Auction Insights tab for one run, to exercise the monthly
+// fallback without letting a monthly paste mask the weekly path during the build.
+sandbox.__monthlyGrid = [
+  ['Month', 'Domain', 'Impr. Share', 'Overlap Rate', 'Position Above Rate',
+   'Top of Page Rate', 'Outranking Share'],
+  [ARGS.month || defaultMonth(), 'amazon.com', '26.0%', '31.0%', '35.0%', '83.0%', '15.0%'],
+  [ARGS.month || defaultMonth(), 'vivobarefoot.com', '14.0%', '35.0%', '49.0%', '77.0%', '14.0%'],
+];
+const savedAuction = sheets['Auction Insights'];
+sandbox.__swapAuction = (grid) => {
+  if (grid) sheets['Auction Insights'] = mockSheet('Auction Insights', grid);
+  else sheets['Auction Insights'] = savedAuction;
+};
 
 let ctx;
 try {
@@ -801,6 +889,104 @@ if (ARGS.engine) {
     ['and does not claim the query failed',
       /_eng_status. carries Google/.test(wrongMonth), false],
   ].forEach(([name, got, want]) => expectEq('slide 10 window', name, got, want));
+}
+
+// ---- auction insights, weekly ----
+{
+  if (!ARGS.quiet) console.log('\nAUCTION INSIGHTS (weekly paste, the export\'s own shape)');
+  const detail = namedRanges['RPT_AUCTION']
+    ? namedRanges['RPT_AUCTION'].range.getValues() : [[]];
+  const trend = namedRanges['RPT_AUCTION_TREND']
+    ? namedRanges['RPT_AUCTION_TREND'].range.getValues() : [[]];
+  const body = detail.slice(1).filter(r => String(r[1] || '').trim());
+  const weeks = (trend[0] || []).slice(1);
+
+  const amazonRow = trend.slice(1).find(r => r[0] === 'amazon.com') || [];
+  const youRow = trend.slice(1).find(r => /^you$/i.test(String(r[0]))) || [];
+
+  [
+    // Weekly grain, and the straddling week counted rather than dropped.
+    ['three weeks overlap the report month', weeks.length, 3],
+    ['the straddling week is kept', weeks.indexOf(isoDate(W0)) !== -1, true],
+    ['a week outside the month is excluded', weeks.indexOf('2001-01-05') !== -1, false],
+    ['weeks are in date order', weeks.join(','),
+      [W0, W1, W2].map(isoDate).join(',')],
+    ['the period column is reported as Week', /Reading the "Week" column/.test(reportText()), true],
+
+    // Percentages, Google's floor, and its not-applicable marker.
+    ['a percentage becomes a ratio', amazonRow[2], 0.2823],
+    ['"< 10%" reads as the 10% floor',
+      body.some(r => r[1] === 'hobibear.com' && r[2] === 0.1), true],
+    // Google writes " --" where a rate does not apply. It must render as the n/a
+    // marker, NOT as 0 — a zero overlap rate is a claim, an absent one is not.
+    ['" --" renders as n/a',
+      body.some(r => /^you$/i.test(String(r[1])) && r[3] === 'n/a'), true],
+    ['…and never as zero',
+      body.some(r => /^you$/i.test(String(r[1])) && r[3] === 0), false],
+    ['…while a real rate on the same row survives',
+      body.some(r => /^you$/i.test(String(r[1])) && r[5] === 0.7606), true],
+
+    // The new column, and the "You" row being first-class.
+    ['Abs. Top of Page Rate is a column', detail[0][6], 'Abs. Top of Page Rate'],
+    ['…and is populated', amazonRow.length > 0 && body.some(r => r[6] === 0.2768), true],
+    ['the You row is carried', youRow.length > 0, true],
+    ['…and flagged as measuring something different',
+      /measures a different thing from the impression-share block/.test(reportText()), true],
+
+    // The trend, which is the reason for pulling weekly.
+    ['amazon.com climbs across the weeks',
+      amazonRow[1] < amazonRow[2] && amazonRow[2] < amazonRow[3], true],
+    // "You" leads the first week (24.0%) and amazon.com leads the last (31.0%), so the
+    // two orderings disagree. Ordering by the LATEST week is what makes the table read
+    // as "who is ahead now" — the whole reason to look at weekly data.
+    ['the pivot is ordered by the latest week, not the first', trend[1][0], 'amazon.com'],
+    ['…and the first week\'s leader is not on top',
+      /^you$/i.test(String(trend[1][0])), false],
+    ['…which are genuinely different orderings here',
+      Number(trend.slice(1).find(r => /^you$/i.test(String(r[0])))[1]) >
+      Number(trend.slice(1).find(r => r[0] === 'amazon.com')[1]), true],
+    // bearefoot/hobibear appear in only one week; their other cells must be blank, not 0.
+    // bearefoot.com appears in one week only. Its other cells must read n/a, not 0 —
+    // Google omits a competitor below its reporting threshold rather than reporting a
+    // zero, so a 0 here would invent a fact and break the trend line.
+    ['a domain missing from a week reads n/a',
+      (trend.slice(1).find(r => r[0] === 'bearefoot.com') || [])[1], 'n/a'],
+    ['…and not zero',
+      (trend.slice(1).find(r => r[0] === 'bearefoot.com') || [])[1] === 0, false],
+  ].forEach(([name, got, want]) => expectEq('auction weekly', name, got, want));
+
+  // The chart is the reason for pulling weekly at all, so assert its shape rather than
+  // just that it was built. RPT_AUCTION_TREND is domains × weeks, so it must be
+  // TRANSPOSED — without that every week becomes a series and the lines are meaningless.
+  const trendChart = allCharts.map(c => c.spec)
+    .find(sp => sp && /Auction Insights/.test(String(sp.options.title || '')));
+  [
+    ['a weekly trend chart is built', !!trendChart, true],
+    ['…transposed, so each domain is a line, not each week',
+      trendChart && trendChart.transposed, true],
+    ['…with the header row as series names', trendChart && trendChart.headers, 1],
+    ['…and a legend, since there are several lines',
+      trendChart && trendChart.options.legend && trendChart.options.legend.position, 'right'],
+  ].forEach(([name, got, want]) => expectEq('auction chart', name, got, want));
+
+  // A MONTHLY paste must keep working — an existing sheet has one, and silently
+  // reading it as weekly would label four weeks of rows with one month.
+  const monthly = vm.runInContext(`(function () {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var saved = ss.getSheetByName('Auction Insights');
+    __swapAuction(__monthlyGrid);
+    try {
+      return readAuction_(resolvePeriods_().current);
+    } finally { __swapAuction(null); }
+  })()`, context);
+
+  [
+    ['a monthly paste is still read', monthly.rows.length, 2],
+    ['…and reported as Month, not Week', monthly.periodColumn, 'Month'],
+    ['…and its grain is not mistaken for weekly', monthly.grain, 'month'],
+    ['…and the note says to re-download by week',
+      /This is a MONTHLY paste/.test(reportText()) === false, true],
+  ].forEach(([name, got, want]) => expectEq('auction monthly', name, got, want));
 }
 
 // ---- the dimension-discovery diagnostic's recommendation ----

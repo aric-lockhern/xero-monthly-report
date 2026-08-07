@@ -162,7 +162,13 @@ would weight a \$2 day the same as a \$2,000 day. Only Search and Shopping
 campaigns report this metric — PMax and Demand Gen don't, so the script queries it
 separately for those two channel types.
 
-Competitors: manual paste. GAPS §1.
+Competitors: manual paste, **weekly**. `RPT_AUCTION` is every week × domain with all
+six rates; `RPT_AUCTION_TREND` pivots impression share to domains × weeks and drives a
+line chart on the `Report` tab. Weeks overlapping the report month are included, so a
+straddling week appears in both. `< 10%` reads as 10%, ` --` reads as `n/a` never `0`,
+and a domain absent from a week reads `n/a` because Google omits below-threshold
+competitors rather than reporting zero. The `You` row is kept and is **not** the same
+measurement as the block above. A `Month` column is still accepted. GAPS §1.
 
 ### Slide 10 — PMax non-brand search terms (`RPT_PMAX_CAT`)
 Raw Performance Max **search terms**, brand excluded, **sorted by impressions**.

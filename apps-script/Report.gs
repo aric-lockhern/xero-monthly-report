@@ -477,6 +477,9 @@ function renderReportTab_(ctx) {
   renderChatgptBlock_(w, ctx);
   renderReconciliationBlock_(w, ctx);
   renderBrandIsChart_(sheet, w.at());
+  // Offset so the two charts do not overlap — an inserted chart does not advance the
+  // writer's cursor, so the second has to be placed past the first's height by hand.
+  renderAuctionTrendChart_(sheet, w.at() + 18);
 
   sheet.setColumnWidth(1, 230);
   for (var c = 2; c <= 16; c++) sheet.setColumnWidth(c, 92);

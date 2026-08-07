@@ -77,7 +77,7 @@ block explaining each one.
 | 7 Shopping brand vs. non-brand | Triple Whale + classification | automated |
 | 8 Product category | Google Ads `shopping_performance_view` | automated — Custom label 1 × Custom label 4, changeable on the `Settings` tab |
 | 9 Brand impression share (ours) | Google Ads `search_impression_share` | automated |
-| 9 Auction insights (competitors) | — | **manual paste — no API exists** |
+| 9 Auction insights (competitors) | — | **manual weekly paste — no API exists**; pivoted and charted by week |
 | 10 PMax non-brand search terms | Google Ads `campaign_search_term_view` | automated, sorted by traffic; brand excluded on the reading side |
 | 11 Top products | Google Ads item-level | automated, images matched from your Shopping feed by title |
 | 12 Promotion recap | Triple Whale + Google Ads assets | automated (needs promo dates on the `Promos` tab) |

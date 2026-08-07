@@ -2151,6 +2151,9 @@ function renderReportTab_(ctx) {
   renderChatgptBlock_(w, ctx);
   renderReconciliationBlock_(w, ctx);
   renderBrandIsChart_(sheet, w.at());
+  // Offset so the two charts do not overlap — an inserted chart does not advance the
+  // writer's cursor, so the second has to be placed past the first's height by hand.
+  renderAuctionTrendChart_(sheet, w.at() + 18);
 
   sheet.setColumnWidth(1, 230);
   for (var c = 2; c <= 16; c++) sheet.setColumnWidth(c, 92);
@@ -2598,32 +2601,177 @@ function renderImpressionShareBlocks_(w, ctx) {
   });
 
   // ---- competitors: manual paste, because no API exposes this ----
-  var auction = readEngineTab_(AUCTION_SHEET);
-  var thisMonth = auction.filter(function (r) { return monthOf_(r.month) === period.month; });
-  var rows = thisMonth.map(function (r) {
-    return [
-      String(r.domain || ''),
-      toRatio_(r['impr. share'] !== undefined ? r['impr. share'] : r['impression share']),
+  renderAuctionBlocks_(w, period);
+}
+
+/**
+ * Auction insights, WEEKLY, from the hand-pasted export.
+ *
+ * Weekly rather than monthly because a single monthly figure hides the thing this
+ * data is for: whether a competitor is moving. One number per domain per month cannot
+ * show a rival ramping mid-month, and that is usually the finding.
+ *
+ * Two blocks out of one paste:
+ *   RPT_AUCTION        every week × domain, all six rates — the full record
+ *   RPT_AUCTION_TREND  impression share as domains × weeks — the chartable pivot
+ *
+ * A monthly paste still works. The reader accepts a `Week` or a `Month` column and
+ * says which it found, so an existing sheet keeps rendering after this change.
+ */
+function renderAuctionBlocks_(w, period) {
+  var parsed = readAuction_(period);
+  var domains = parsed.domains, weeks = parsed.weeks;
+
+  var note = 'Google exposes NO auction insights through the Google Ads API or Google Ads Scripts, ' +
+    'for any campaign type — this block is fed by hand. Google Ads → Campaigns → select the brand ' +
+    'campaigns → Insights → Auction insights → segment by week → download, then paste into the "' +
+    AUCTION_SHEET + '" tab. See docs/GAPS.md.';
+
+  if (!parsed.rows.length) {
+    note += '  ⚠  Nothing pasted for ' + period.label + ' yet.';
+  } else {
+    note += '  Reading the "' + parsed.periodColumn + '" column: ' + weeks.length +
+      (parsed.grain === 'week' ? ' week(s) ' : ' period(s) ') + 'overlapping ' + period.label +
+      ' — ' + weeks.join(', ') + '.';
+    if (parsed.grain === 'month') {
+      note += '  This is a MONTHLY paste. Re-download segmented by week to see movement within the ' +
+        'month, which is what this data is for.';
+    }
+    note += '  A week is included when it OVERLAPS the report month, so a week straddling the ' +
+      'boundary appears in both months rather than being dropped from one. Rows are labelled by ' +
+      'week start, matching Google\'s own export.';
+    if (parsed.you) {
+      note += '  The "' + parsed.you + '" row is your own account, as Google reports it. It measures ' +
+        'a different thing from the impression-share block above: auction insights is share of the ' +
+        'auctions you competed in, whereas metrics.search_impression_share is share of eligible ' +
+        'impressions on your brand campaigns. Expect them to differ, and do not present them as the ' +
+        'same number.';
+    }
+  }
+
+  // ---- the full record: week × domain ----
+  w.block({
+    name: 'RPT_AUCTION', slide: '9', title: 'Auction Insights — by week (manual)',
+    note: note,
+    header: ['Week', 'Display URL Domain', 'Impr. Share', 'Overlap Rate', 'Position Above Rate',
+             'Top of Page Rate', 'Abs. Top of Page Rate', 'Outranking Share'],
+    rows: parsed.rows.length ? parsed.rows : [['', '', null, null, null, null, null, null]],
+    colFormats: [null, null, '0.0%', '0.0%', '0.0%', '0.0%', '0.0%', '0.0%'],
+  });
+
+  // ---- the pivot: impression share, domains × weeks ----
+  //
+  // Worth its own block because the detail table above cannot be read as a trend and
+  // cannot be charted. Domains ordered by their LATEST week's share, so the table reads
+  // as "who is ahead now" rather than by an average nobody asked for.
+  var pivot = domains.map(function (d) {
+    var row = [d];
+    for (var i = 0; i < weeks.length; i++) {
+      var v = parsed.shareOf[d + '||' + weeks[i]];
+      row.push(v === undefined ? null : v);
+    }
+    return row;
+  });
+  var last = weeks.length;
+  pivot.sort(function (a, b) {
+    // Fall back through earlier weeks so a domain absent from the final week still
+    // sorts sensibly instead of sinking to the bottom as a null.
+    for (var i = last; i >= 1; i--) {
+      var av = a[i], bv = b[i];
+      if (av !== null && bv !== null && av !== bv) return bv - av;
+      if (av === null && bv !== null) return 1;
+      if (bv === null && av !== null) return -1;
+    }
+    return 0;
+  });
+
+  w.block({
+    name: 'RPT_AUCTION_TREND', slide: '9', title: 'Auction Insights — impression share by week',
+    note: weeks.length
+      ? 'Impression share only, pivoted for reading and charting. Ordered by the most recent week. ' +
+        'Blank means the domain did not appear in that week\'s export, which is itself a signal — ' +
+        'Google omits a competitor below its reporting threshold rather than showing a zero.'
+      : 'Nothing to pivot until the "' + AUCTION_SHEET + '" tab has data for ' + period.label + '.',
+    header: ['Display URL Domain'].concat(weeks),
+    rows: pivot.length ? pivot : [[''].concat(weeks.map(function () { return null; }))],
+    colFormats: [null].concat(weeks.map(function () { return '0.0%'; })),
+  });
+}
+
+/**
+ * Parse the auction insights tab for the weeks overlapping one month.
+ *
+ * Returns { rows, domains, weeks, shareOf, grain, periodColumn, you }.
+ *
+ * The period column may be headed `Week` or `Month`, and Google's export writes it as
+ * `7/13/2026`. Both are accepted, and which one was used is reported rather than
+ * assumed — a paste silently read as the wrong grain would put four weeks of rows
+ * under one month label.
+ */
+function readAuction_(period) {
+  var raw = readEngineTab_(AUCTION_SHEET);
+  var out = { rows: [], domains: [], weeks: [], shareOf: {}, grain: 'week',
+              periodColumn: 'Week', you: '' };
+  if (!raw.length) return out;
+
+  var hasWeek = raw[0].week !== undefined;
+  out.grain = hasWeek ? 'week' : 'month';
+  out.periodColumn = hasWeek ? 'Week' : 'Month';
+
+  var monthStart = period.start, monthEnd = period.end;
+  var seenDomain = {}, seenWeek = {};
+
+  for (var i = 0; i < raw.length; i++) {
+    var r = raw[i];
+    var domain = String(r.domain || r['display url domain'] || '').trim();
+    if (!domain || domain.indexOf('Paste ') === 0) continue;
+
+    var label, keep;
+    if (hasWeek) {
+      var start = normDate_(r.week);
+      if (!start) continue;
+      // A week OVERLAPS the month if its last day is not before the month's first and
+      // its first day is not after the month's last. Straddling weeks therefore show
+      // in both months rather than vanishing from one — a dropped boundary week is a
+      // gap in a trend line, which reads as a competitor pausing.
+      var end = dateAdd_(start, 6);
+      keep = (end >= monthStart && start <= monthEnd);
+      label = start;
+    } else {
+      label = monthOf_(r.month);
+      keep = (label === period.month);
+    }
+    if (!keep) continue;
+
+    var share = toRatio_(r['impr. share'] !== undefined ? r['impr. share'] : r['impression share']);
+    out.rows.push([
+      label, domain, share,
       toRatio_(r['overlap rate']),
       toRatio_(r['position above rate']),
       toRatio_(r['top of page rate']),
+      toRatio_(r['abs. top of page rate'] !== undefined
+        ? r['abs. top of page rate'] : r['abs top of page rate']),
       toRatio_(r['outranking share']),
-    ];
-  }).sort(function (a, b) { return num_(b[1]) - num_(a[1]); });
+    ]);
 
-  w.block({
-    name: 'RPT_AUCTION', slide: '9', title: 'Auction Insights — competitors (manual)',
-    note: 'Google exposes NO auction insights data through the Google Ads API or Google Ads ' +
-      'Scripts, for any campaign type. This block is fed by hand: Google Ads → Campaigns → select ' +
-      'the brand campaigns → Insights → Auction insights → download, then paste into the "' +
-      AUCTION_SHEET + '" tab. See docs/GAPS.md.' +
-      (thisMonth.length ? '' : '  ⚠  Nothing pasted for ' + period.label + ' yet.'),
-    header: ['Display URL Domain', 'Impr. Share', 'Overlap Rate', 'Position Above Rate',
-             'Top of Page Rate', 'Outranking Share'],
-    rows: rows.length ? rows : [['', null, null, null, null, null]],
-    colFormats: [null, '0.0%', '0.0%', '0.0%', '0.0%', '0.0%'],
+    if (!seenDomain[domain]) { seenDomain[domain] = true; out.domains.push(domain); }
+    if (!seenWeek[label]) { seenWeek[label] = true; out.weeks.push(label); }
+    // Last row wins for a duplicate (domain, week) — a re-paste over the same period
+    // should update rather than double up.
+    out.shareOf[domain + '||' + label] = share;
+    if (/^you$/i.test(domain)) out.you = domain;
+  }
+
+  out.weeks.sort();
+  // Week ascending, then share descending inside each week, so the table reads down
+  // time and across the ranking at once.
+  out.rows.sort(function (a, b) {
+    if (a[0] !== b[0]) return a[0] < b[0] ? -1 : 1;
+    return num_(b[2]) - num_(a[2]);
   });
+  return out;
 }
+
 
 /**
  * A line chart of our brand impression share, parked at the bottom of the Report
@@ -2655,7 +2803,49 @@ function renderBrandIsChart_(sheet, anchorRow) {
   sheet.insertChart(chart);
 }
 
-/** Accept 0.42, '42%', '42' or '< 10%' from a pasted auction insights export. */
+/**
+ * A multi-series line chart of impression share by week, one line per competitor.
+ *
+ * This is the payoff for pasting weekly rather than monthly data, and the reason the
+ * pivot block exists: "amazon.com went from 22% to 28% across the month while we held
+ * flat" is a finding, and no monthly table can show it.
+ *
+ * Built from RPT_AUCTION_TREND, whose first column is the domain and whose remaining
+ * columns are weeks — so the chart needs its rows and columns transposed relative to
+ * the brand-IS chart above.
+ */
+function renderAuctionTrendChart_(sheet, anchorRow) {
+  var range = SpreadsheetApp.getActiveSpreadsheet().getRangeByName('RPT_AUCTION_TREND');
+  // Header + at least two domains, and at least two weeks — one week is a dot, not a
+  // trend, and charting it invites a conclusion the data cannot support.
+  if (!range || range.getNumRows() < 3 || range.getNumColumns() < 3) return;
+
+  var chart = sheet.newChart()
+    .asLineChart()
+    .addRange(range)
+    .setNumHeaders(1)
+    .setTransposeRowsAndColumns(true)
+    .setPosition(anchorRow, 1, 0, 0)
+    .setOption('title', 'Auction Insights — impression share by week (' + REGION + ')')
+    .setOption('legend', { position: 'right' })
+    .setOption('width', 900)
+    .setOption('height', 360)
+    .setOption('pointSize', 4)
+    .setOption('lineWidth', 2)
+    .setOption('vAxis', { format: 'percent', viewWindow: { min: 0 } })
+    .setOption('hAxis', { slantedText: true, slantedTextAngle: 45 })
+    .build();
+
+  sheet.insertChart(chart);
+}
+
+/**
+ * Accept 0.42, '42%', '42', '< 10%' or ' --' from a pasted auction insights export.
+ *
+ * Google writes ' --' where a rate does not apply — every column but impression share
+ * and top-of-page is blank on the "You" row, for instance. That must read as `n/a`, not
+ * as zero: a zero overlap rate is a claim, and an absent one is not.
+ */
 function toRatio_(v) {
   if (v === null || v === undefined || v === '') return null;
   if (typeof v === 'number') return v > 1 ? v / 100 : v;
@@ -3027,16 +3217,25 @@ function ensureInputTabs_() {
 
   if (!ss.getSheetByName(AUCTION_SHEET)) {
     var a = ss.insertSheet(AUCTION_SHEET);
-    var ah = ['Month', 'Domain', 'Impr. Share', 'Overlap Rate', 'Position Above Rate',
-              'Top of Page Rate', 'Outranking Share'];
+    var ah = ['Week', 'Display URL domain', 'Impression share', 'Overlap rate',
+              'Position above rate', 'Top of page rate', 'Abs. Top of page rate',
+              'Outranking share'];
     a.getRange(1, 1, 1, ah.length).setValues([ah])
       .setFontWeight('bold').setBackground(HEAD_BG).setFontColor(HEAD_FG);
     a.setFrozenRows(1);
-    a.getRange(1, 1).setNote('Month as yyyy-MM (e.g. 2026-07). One row per competitor domain per ' +
-      'month. Paste from Google Ads → Campaigns → select brand campaigns → Insights → Auction ' +
-      'insights → download. This cannot be automated: no Google API exposes auction insights.');
-    a.getRange(2, 1, 1, 2).setValues([['', 'Paste your auction insights export here →']])
+    a.getRange(1, 1).setNote('WEEKLY. Google Ads → Campaigns → select the brand campaigns → ' +
+      'Insights → Auction insights → segment by week → Download, then paste here.\n\n' +
+      'These are the export\'s own headers, so you can paste it straight in. Week is the week\'s ' +
+      'START date in whatever format the export uses (7/13/2026 is fine).\n\n' +
+      'Weekly rather than monthly because one number per month cannot show a competitor ramping ' +
+      'mid-month, which is usually the finding. A week is included when it OVERLAPS the report ' +
+      'month, so a straddling week appears in both rather than being dropped from one.\n\n' +
+      'A "Month" column (yyyy-MM) is still accepted for older pastes. Keep the "You" row — it is ' +
+      'read as your own account.\n\n' +
+      'This cannot be automated: no Google API exposes auction insights.');
+    a.getRange(2, 1, 1, 2).setValues([['', 'Paste your weekly auction insights export here →']])
       .setFontColor('#9ca3af').setFontStyle('italic');
+    a.getRange(2, 1, 300, 1).setNumberFormat('@');
     for (var c = 1; c <= ah.length; c++) a.autoResizeColumn(c);
   }
 

@@ -17,10 +17,35 @@ A feature request has been open for years.
 Everything else on slide 9 *is* automated: `metrics.search_impression_share` gives
 our own brand impression share, by day, rolled up correctly.
 
-**Workaround (built in):** the `Auction Insights` tab. Google Ads → Campaigns →
-select the brand campaigns → Insights → Auction insights → download → paste, with
-`Month` as `yyyy-MM`. The parser handles `42%`, `0.42`, `42` and Google's `< 10%`
-floor (read as 10%).
+**Workaround (built in):** the `Auction Insights` tab, read **weekly**. Google Ads →
+Campaigns → select the brand campaigns → Insights → Auction insights → **segment by
+week** → download → paste. The tab carries the export's own headers, so it goes
+straight in.
+
+Weekly rather than monthly because one figure per domain per month cannot show a
+competitor ramping mid-month, and that is usually the finding. Two blocks come out of
+one paste: `RPT_AUCTION` (every week × domain, all six rates) and `RPT_AUCTION_TREND`
+(impression share pivoted domains × weeks), plus a multi-series line chart at the
+bottom of the `Report` tab.
+
+- **Week boundaries.** A week is included when it **overlaps** the report month, so a
+  week straddling the boundary appears in both months rather than being dropped from
+  one. Rows are labelled by week start, matching Google's export.
+- **A `Month` column is still accepted**, so an existing monthly paste keeps rendering;
+  the note says which column it read and suggests re-downloading by week.
+- **The parser** handles `42%`, `0.42`, `42`, Google's `< 10%` floor (read as 10%) and
+  its ` --` for not-applicable — which becomes `n/a`, never `0`. A zero overlap rate is
+  a claim; an absent one is not.
+- **The `You` row is kept** as your own account. It measures something different from
+  the impression-share block above it: auction insights is share of the auctions you
+  competed in, whereas `metrics.search_impression_share` is share of eligible
+  impressions on your brand campaigns. Expect them to differ, and the block's note says
+  so — presenting them as the same number is the mistake to avoid.
+- **A domain absent from a week reads `n/a`, not `0`.** Google omits a competitor below
+  its reporting threshold rather than reporting a zero, so a `0` would invent a fact and
+  put a false floor in the trend line.
+- **The pivot is ordered by the most recent week**, so it reads as "who is ahead now"
+  rather than by an average nobody asked for.
 
 **To close it:** nothing you can build. Watch the Google Ads API release notes.
 

@@ -9,7 +9,7 @@
     "",
     "In _eng_day, `_generate` expands to daily rows. Month offsets are relative",
     "to the month under test: 0 = report month, -1 = prior, -12 = year-ago.",
-    "The -12 entry is the important one \u2014 the Triple Whale store does not reach",
+    "The -12 entry is the important one — the Triple Whale store does not reach",
     "back that far, so it exercises the path where %YoY engine columns are real",
     "while the Triple Whale columns must read n/a.",
     "",
@@ -285,31 +285,186 @@
     "product_custom_attribute0 is mostly unpopulated, the other failure mode."
   ],
   "_eng_product_dims": [
-    ["month", "dimension", "value", "impressions", "clicks", "cost", "conversions", "conversions_value"],
-
-    ["$REPORT_MONTH", "product_custom_attribute0", "(not set)", 3200000, 44000, 55000, 1300, 178000],
-    ["$REPORT_MONTH", "product_custom_attribute0", "seasonal", 320000, 4100, 5200, 130, 17000],
-
-    ["$REPORT_MONTH", "product_custom_attribute1", "shoes", 3520000, 48100, 60200, 1430, 195000],
-
-    ["$REPORT_MONTH", "product_custom_attribute4", "unisex", 1900000, 26000, 32500, 780, 105000],
-    ["$REPORT_MONTH", "product_custom_attribute4", "female", 980000, 13400, 16800, 400, 54000],
-    ["$REPORT_MONTH", "product_custom_attribute4", "male", 640000, 8700, 10900, 250, 36000],
-
-    ["$REPORT_MONTH", "product_type_l1", "Trail", 1420000, 19100, 24200, 610, 84100],
-    ["$REPORT_MONTH", "product_type_l1", "Everyday", 1180000, 16200, 19800, 465, 61200],
-    ["$REPORT_MONTH", "product_type_l1", "Sandals", 660000, 9300, 10300, 268, 34500],
-    ["$REPORT_MONTH", "product_type_l1", "Water", 340000, 4900, 5600, 141, 17800],
-    ["$REPORT_MONTH", "product_type_l1", "Boots", 96000, 1250, 1800, 34, 5100],
-
-    ["$REPORT_MONTH", "product_type_l2", "Trail Running", 820000, 11200, 14100, 355, 49000],
-    ["$REPORT_MONTH", "product_type_l2", "Hiking", 600000, 7900, 10100, 255, 35100],
-    ["$REPORT_MONTH", "product_type_l2", "Casual", 1180000, 16200, 19800, 465, 61200],
-    ["$REPORT_MONTH", "product_type_l2", "Flip Flops", 660000, 9300, 10300, 268, 34500],
-
-    ["$REPORT_MONTH", "product_brand", "Xero Shoes", 3520000, 48100, 60200, 1430, 195000],
-
-    ["$REPORT_MONTH", "product_type_l3", "(not set)", 3520000, 48100, 60200, 1430, 195000]
+    [
+      "month",
+      "dimension",
+      "value",
+      "impressions",
+      "clicks",
+      "cost",
+      "conversions",
+      "conversions_value"
+    ],
+    [
+      "$REPORT_MONTH",
+      "product_custom_attribute0",
+      "(not set)",
+      3200000,
+      44000,
+      55000,
+      1300,
+      178000
+    ],
+    [
+      "$REPORT_MONTH",
+      "product_custom_attribute0",
+      "seasonal",
+      320000,
+      4100,
+      5200,
+      130,
+      17000
+    ],
+    [
+      "$REPORT_MONTH",
+      "product_custom_attribute1",
+      "shoes",
+      3520000,
+      48100,
+      60200,
+      1430,
+      195000
+    ],
+    [
+      "$REPORT_MONTH",
+      "product_custom_attribute4",
+      "unisex",
+      1900000,
+      26000,
+      32500,
+      780,
+      105000
+    ],
+    [
+      "$REPORT_MONTH",
+      "product_custom_attribute4",
+      "female",
+      980000,
+      13400,
+      16800,
+      400,
+      54000
+    ],
+    [
+      "$REPORT_MONTH",
+      "product_custom_attribute4",
+      "male",
+      640000,
+      8700,
+      10900,
+      250,
+      36000
+    ],
+    [
+      "$REPORT_MONTH",
+      "product_type_l1",
+      "Trail",
+      1420000,
+      19100,
+      24200,
+      610,
+      84100
+    ],
+    [
+      "$REPORT_MONTH",
+      "product_type_l1",
+      "Everyday",
+      1180000,
+      16200,
+      19800,
+      465,
+      61200
+    ],
+    [
+      "$REPORT_MONTH",
+      "product_type_l1",
+      "Sandals",
+      660000,
+      9300,
+      10300,
+      268,
+      34500
+    ],
+    [
+      "$REPORT_MONTH",
+      "product_type_l1",
+      "Water",
+      340000,
+      4900,
+      5600,
+      141,
+      17800
+    ],
+    [
+      "$REPORT_MONTH",
+      "product_type_l1",
+      "Boots",
+      96000,
+      1250,
+      1800,
+      34,
+      5100
+    ],
+    [
+      "$REPORT_MONTH",
+      "product_type_l2",
+      "Trail Running",
+      820000,
+      11200,
+      14100,
+      355,
+      49000
+    ],
+    [
+      "$REPORT_MONTH",
+      "product_type_l2",
+      "Hiking",
+      600000,
+      7900,
+      10100,
+      255,
+      35100
+    ],
+    [
+      "$REPORT_MONTH",
+      "product_type_l2",
+      "Casual",
+      1180000,
+      16200,
+      19800,
+      465,
+      61200
+    ],
+    [
+      "$REPORT_MONTH",
+      "product_type_l2",
+      "Flip Flops",
+      660000,
+      9300,
+      10300,
+      268,
+      34500
+    ],
+    [
+      "$REPORT_MONTH",
+      "product_brand",
+      "Xero Shoes",
+      3520000,
+      48100,
+      60200,
+      1430,
+      195000
+    ],
+    [
+      "$REPORT_MONTH",
+      "product_type_l3",
+      "(not set)",
+      3520000,
+      48100,
+      60200,
+      1430,
+      195000
+    ]
   ],
   "_comment_pmax_term": [
     "Slide 10: raw Performance Max search TERMS from campaign_search_term_view.",
@@ -328,17 +483,94 @@
     "slide."
   ],
   "_eng_pmax_term": [
-    ["month", "campaign_id", "campaign", "search_term",
-     "impressions", "clicks", "cost", "conversions", "conversions_value"],
-
-    ["$REPORT_MONTH", "1001", "LD - PMAX - All Products - NB - Performance", "xero shoes", 402000, 18400, 7100, 690, 92000],
-    ["$REPORT_MONTH", "1001", "LD - PMAX - All Products - NB - Performance", "xeroshoes prio", 88000, 3900, 1500, 141, 19000],
-
-    ["$REPORT_MONTH", "1001", "LD - PMAX - All Products - NB - Performance", "barefoot shoes", 152000, 14100, 9800, 0, 0],
-    ["$REPORT_MONTH", "1001", "LD - PMAX - All Products - NB - Performance", "zero drop running shoes", 131000, 8900, 6400, 164, 21900],
-    ["$REPORT_MONTH", "1001", "LD - PMAX - All Products - NB - Performance", "wide toe box shoes", 74000, 5100, 3900, 96, 12800],
-    ["$REPORT_MONTH", "1001", "LD - PMAX - All Products - NB - Performance", "minimalist hiking boots", 41000, 2600, 2100, 38, 5200],
-    ["$REPORT_MONTH", "1001", "LD - PMAX - All Products - NB - Performance", "huarache sandals mens", 22000, 1300, 980, 17, 2400]
+    [
+      "month",
+      "campaign_id",
+      "campaign",
+      "search_term",
+      "impressions",
+      "clicks",
+      "cost",
+      "conversions",
+      "conversions_value"
+    ],
+    [
+      "$REPORT_MONTH",
+      "1001",
+      "LD - PMAX - All Products - NB - Performance",
+      "xero shoes",
+      402000,
+      18400,
+      7100,
+      690,
+      92000
+    ],
+    [
+      "$REPORT_MONTH",
+      "1001",
+      "LD - PMAX - All Products - NB - Performance",
+      "xeroshoes prio",
+      88000,
+      3900,
+      1500,
+      141,
+      19000
+    ],
+    [
+      "$REPORT_MONTH",
+      "1001",
+      "LD - PMAX - All Products - NB - Performance",
+      "barefoot shoes",
+      152000,
+      14100,
+      9800,
+      0,
+      0
+    ],
+    [
+      "$REPORT_MONTH",
+      "1001",
+      "LD - PMAX - All Products - NB - Performance",
+      "zero drop running shoes",
+      131000,
+      8900,
+      6400,
+      164,
+      21900
+    ],
+    [
+      "$REPORT_MONTH",
+      "1001",
+      "LD - PMAX - All Products - NB - Performance",
+      "wide toe box shoes",
+      74000,
+      5100,
+      3900,
+      96,
+      12800
+    ],
+    [
+      "$REPORT_MONTH",
+      "1001",
+      "LD - PMAX - All Products - NB - Performance",
+      "minimalist hiking boots",
+      41000,
+      2600,
+      2100,
+      38,
+      5200
+    ],
+    [
+      "$REPORT_MONTH",
+      "1001",
+      "LD - PMAX - All Products - NB - Performance",
+      "huarache sandals mens",
+      22000,
+      1300,
+      980,
+      17,
+      2400
+    ]
   ],
   "_eng_pmax_cat": [
     [
@@ -600,53 +832,6 @@
       ]
     }
   },
-  "Auction Insights": [
-    [
-      "Month",
-      "Domain",
-      "Impr. Share",
-      "Overlap Rate",
-      "Position Above Rate",
-      "Top of Page Rate",
-      "Outranking Share"
-    ],
-    [
-      "$REPORT_MONTH",
-      "xeroshoes.com",
-      "82.4%",
-      "--",
-      "--",
-      "96.1%",
-      "--"
-    ],
-    [
-      "$REPORT_MONTH",
-      "vivobarefoot.com",
-      "14.2%",
-      "31.5%",
-      "22.1%",
-      "78.0%",
-      "9.4%"
-    ],
-    [
-      "$REPORT_MONTH",
-      "merrell.com",
-      "< 10%",
-      "18.2%",
-      "15.0%",
-      "71.3%",
-      "6.1%"
-    ],
-    [
-      "$REPORT_MONTH",
-      "altrarunning.com",
-      "< 10%",
-      "11.4%",
-      "9.2%",
-      "68.5%",
-      "4.3%"
-    ]
-  ],
   "Promos": [
     [
       "Promo Name",
@@ -658,7 +843,7 @@
       "Summer Sale",
       "$REPORT_MONTH-04",
       "$REPORT_MONTH-08",
-      "25% off sitewide \u2014 sample promo window"
+      "25% off sitewide — sample promo window"
     ]
   ],
   "_eng_bing": {
