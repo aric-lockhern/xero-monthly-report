@@ -231,8 +231,44 @@ function chartBuilder() {
   b.setPosition = (row, col) => { spec.row = row; spec.col = col; return b; };
   b.setOption = (k, v) => { spec.options[k] = v; return b; };
   b.setTransposeRowsAndColumns = (v) => { spec.transposed = !!v; return b; };
-  b.build = () => ({ chart: true, spec: spec });
+  // EmbeddedChart really exposes getOptions(), and reportChartByTitle_ relies on it to
+  // pick the auction chart out of the two on the Report tab.
+  b.build = () => ({
+    chart: true, spec: spec,
+    getOptions: () => ({ get: (k) => spec.options[k] }),
+  });
   return b;
+}
+
+/**
+ * Just enough of SlidesApp to exercise slide 9's chart swap.
+ *
+ * Not a general Slides stub — writeDeck_ as a whole is still only exercised against the
+ * real API. This covers the one piece with actual logic: picking the mock chart out of
+ * the slide's images by AREA, and refusing to touch anything when the only candidate is
+ * furniture like a logo. Get that wrong and the deck loses its logo, which is precisely
+ * the kind of thing worth a test.
+ */
+function mockSlideWithImages(specs) {
+  const removed = [];
+  const inserted = [];
+  const images = specs.map((s, i) => ({
+    _i: i,
+    getLeft: () => s.left, getTop: () => s.top,
+    getWidth: () => s.width, getHeight: () => s.height,
+    remove: () => { removed.push(s.tag); },
+  }));
+  const shapes = (specs.captions || []).map(() => null);
+  return {
+    _removed: removed, _inserted: inserted,
+    getImages: () => images,
+    getShapes: () => (specs.shapes || []),
+    getTables: () => [],
+    insertSheetsChart: (chart, left, top, width, height) => {
+      inserted.push({ chart, left, top, width, height });
+      return { sheetsChart: true };
+    },
+  };
 }
 
 function mockRange(sheet, row, col, nr, nc) {
@@ -987,6 +1023,55 @@ if (ARGS.engine) {
     ['…and the note says to re-download by week',
       /This is a MONTHLY paste/.test(reportText()) === false, true],
   ].forEach(([name, got, want]) => expectEq('auction monthly', name, got, want));
+}
+
+// ---- slide 9's chart swap ----
+//
+// Slide 9's chart in the template is a PICTURE of a chart carrying sample data, sized
+// 612×281 on a 960×540 slide (~33%), alongside a 101×37 logo (~0.7%). The swap must pick
+// the first and never the second.
+{
+  if (!ARGS.quiet) console.log('\nSLIDE 9 CHART SWAP');
+
+  sandbox.__mockSlide = (specs) => mockSlideWithImages(specs);
+  const probe = (specs) => vm.runInContext(`(function () {
+    var slide = __mockSlide(${JSON.stringify(specs)});
+    var slides = [0,1,2,3,4,5,6,7].map(function () { return slide; }).concat([slide]);
+    var deck = { getPageWidth: function () { return 960; }, getPageHeight: function () { return 540; } };
+    var skipped = [];
+    fillSlide9Chart_(deck, slides, skipped);
+    return { inserted: slide._inserted, removed: slide._removed, skipped: skipped };
+  })()`, context);
+
+  // The real template's geometry.
+  const real = probe([
+    { tag: 'mock-chart', left: 32, top: 86, width: 612, height: 281 },
+    { tag: 'logo', left: 36, top: 489, width: 101, height: 37 },
+  ]);
+
+  // Logo only — nothing that could be the chart.
+  const logoOnly = probe([{ tag: 'logo', left: 36, top: 489, width: 101, height: 37 }]);
+
+  [
+    ['the mock chart is replaced', real.inserted.length, 1],
+    ['…at the mock\'s exact position', real.inserted[0] && real.inserted[0].left, 32],
+    ['…and its exact size',
+      real.inserted[0] && real.inserted[0].width + 'x' + real.inserted[0].height, '612x281'],
+    ['…and the mock is removed', real.removed.join(','), 'mock-chart'],
+    ['the logo is left alone', real.removed.indexOf('logo'), -1],
+
+    // The failure worth engineering against: with no chart-sized image, do nothing.
+    ['a logo alone is never mistaken for the chart', logoOnly.inserted.length, 0],
+    ['…and nothing is removed', logoOnly.removed.length, 0],
+    ['…and it is reported rather than silent', logoOnly.skipped.length, 1],
+
+    // The chart placed must be the domain-legend one, not the single-series fallback.
+    ['the auction chart is the one placed',
+      real.inserted[0] && /Auction Insights/.test(
+        String(real.inserted[0].chart.getOptions().get('title'))), true],
+    ['…and it carries a legend so the domains are named',
+      real.inserted[0] && real.inserted[0].chart.getOptions().get('legend').position, 'right'],
+  ].forEach(([name, got, want]) => expectEq('slide 9 chart', name, got, want));
 }
 
 // ---- the dimension-discovery diagnostic's recommendation ----

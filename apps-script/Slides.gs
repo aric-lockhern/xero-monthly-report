@@ -12,7 +12,10 @@
  *   · narrative bullets — the "[Headline #1 — …]" placeholders. Those are the
  *     analyst's job, and a generated sentence about "up 12% MoM" is exactly the
  *     filler a client notices.
- *   · slide 9's chart, and slide 12's ad-unit screenshot. See docs/GAPS.md.
+ *   · slide 12's ad-unit screenshot. See docs/GAPS.md.
+ *
+ * Slide 9's chart IS filled: the template's mock chart image is replaced with a live
+ * LINKED Sheets chart from the Report tab, so it refreshes rather than going stale.
  *
  * Slide 11 product imagery IS filled, from the `Product Images` tab — the Google
  * Ads API exposes no image URL, so those come from your Shopping feed. See
@@ -127,6 +130,10 @@ function writeDeck_(ctx) {
   // ---- slide 11 product cards, with imagery ----
   try { fillProductCards_(slides, skipped); }
   catch (e) { skipped.push('slide 11 product cards: ' + e.message); }
+
+  // ---- slide 9's chart, swapped for the live linked one ----
+  try { fillSlide9Chart_(deck, slides, skipped); }
+  catch (e) { skipped.push('slide 9 chart: ' + e.message); }
 
   deck.saveAndClose();
 
@@ -354,6 +361,116 @@ function insertProductImage_(slide, frame, url, skipped, label) {
 
   try { frame.remove(); } catch (e) { /* leave it behind the image if it won't delete */ }
   return true;
+}
+
+// ============================== SLIDE 9: THE CHART =========================
+
+// Slide 9's chart is a PICTURE of a chart carrying sample data — the template's own
+// caption says "replace with the linked Sheets chart". It is not a chart object, so
+// there are no series to rewrite; it has to be swapped out wholesale.
+//
+// An image below this share of the slide area is not the chart. Slide 9 carries exactly
+// two pictures: the mock chart at ~33% of the slide, and the Lockhern logo at ~0.7%.
+// Anything under a few percent is furniture, and removing it would delete a logo.
+var CHART_IMAGE_MIN_AREA = 0.05;
+
+/**
+ * Replace slide 9's mock chart with the live, LINKED Sheets chart.
+ *
+ * Linked rather than an image: the chart keeps a reference back to the Report tab, so
+ * "refresh" in Slides re-pulls it. A future rebuild updates the same object instead of
+ * accumulating stale pictures.
+ *
+ * Prefers the auction-insights chart, which carries one line per competitor domain with
+ * a legend — that is the chart this slide is for, and it includes our own line via the
+ * export's "You" row. Falls back to the single-series brand impression share chart when
+ * there is not enough auction data to plot, and SAYS which one it used: a chart that
+ * silently answers a different question than the caption claims is worse than a gap.
+ */
+function fillSlide9Chart_(deck, slides, skipped) {
+  if (slides.length < 9) return;
+  var slide = slides[8];
+
+  var chart = reportChartByTitle_('Auction Insights');
+  var which = 'auction insights by week, one line per domain';
+  if (!chart) {
+    chart = reportChartByTitle_('Brand Impression Share');
+    which = 'brand impression share by day (FALLBACK — the auction chart needs at least ' +
+      'two weeks and two domains on the "' + AUCTION_SHEET + '" tab)';
+  }
+  if (!chart) {
+    skipped.push('slide 9: no chart on the ' + REPORT_SHEET + ' tab to place. Paste a weekly ' +
+      'auction insights export into the "' + AUCTION_SHEET + '" tab and rebuild.');
+    return;
+  }
+
+  // The mock is the largest image on the slide. Measured by AREA rather than by width,
+  // so a wide-but-short banner cannot outrank it.
+  var target = null, targetArea = 0;
+  var slideArea = deck.getPageWidth() * deck.getPageHeight();
+  var images = slide.getImages();
+  for (var i = 0; i < images.length; i++) {
+    var a = images[i].getWidth() * images[i].getHeight();
+    if (a > targetArea) { targetArea = a; target = images[i]; }
+  }
+
+  if (!target || targetArea / slideArea < CHART_IMAGE_MIN_AREA) {
+    skipped.push('slide 9: could not find the mock chart image to replace (largest image is ' +
+      (target ? Math.round(targetArea / slideArea * 100) + '% of the slide' : 'none') +
+      ', expected the chart at roughly a third). The chart was NOT placed — slide 9 still ' +
+      'shows sample data.');
+    return;
+  }
+
+  var left = target.getLeft(), top = target.getTop();
+  var width = target.getWidth(), height = target.getHeight();
+
+  try {
+    target.remove();
+    slide.insertSheetsChart(chart, left, top, width, height);
+    progress_('Slide 9: placed the live chart — ' + which + '.');
+  } catch (e) {
+    skipped.push('slide 9: could not place the chart — ' + e.message);
+    return;
+  }
+
+  retitleCaption_(slide, /replace with the linked Sheets chart/i,
+    'Auction Insights — brand campaign impression share by week. Live linked chart from the ' +
+    REPORT_SHEET + ' tab; use Slides → refresh to re-pull.', skipped);
+}
+
+/** The Report tab's chart whose title contains `needle`, or null. */
+function reportChartByTitle_(needle) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(REPORT_SHEET);
+  if (!sheet) return null;
+  var charts = sheet.getCharts();
+  for (var i = 0; i < charts.length; i++) {
+    var title = '';
+    // getOptions() throws on some chart types rather than returning empty, and one bad
+    // chart must not hide the others.
+    try { title = String(charts[i].getOptions().get('title') || ''); } catch (e) { continue; }
+    if (title.indexOf(needle) !== -1) return charts[i];
+  }
+  return null;
+}
+
+/**
+ * Rewrite a caption that still carries the template's placeholder wording.
+ *
+ * Matches on the ORIGINAL text, so this is idempotent — running over an
+ * already-generated deck leaves the caption alone rather than rewriting it twice.
+ */
+function retitleCaption_(slide, was, is, skipped) {
+  var shapes = slide.getShapes();
+  for (var i = 0; i < shapes.length; i++) {
+    var text;
+    try { text = shapes[i].getText().asString(); } catch (e) { continue; }
+    if (!text || !was.test(text)) continue;
+    try { shapes[i].getText().setText(is); } catch (e2) {
+      skipped.push('could not update a caption — ' + e2.message);
+    }
+    return;
+  }
 }
 
 /**

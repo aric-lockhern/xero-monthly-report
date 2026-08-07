@@ -78,10 +78,10 @@ will look duplicated. That's expected.
 The generated deck has every table, the stat cards, the product cards, the cover
 dates and the footers. What's left:
 
-**☐ Slide 9 — paste the charts.** Two are generated at the bottom of the `Report` tab:
-our brand impression share by day, and competitor impression share by week. Copy the
-one the slide needs and paste over slide 9's placeholder chart. Paste **linked** and
-future rebuilds update it in place ([GAPS §7](GAPS.md)).
+**☐ Slide 9 — check the chart landed.** It is now placed automatically: the mock chart
+is replaced with the live, linked competitor impression-share-by-week chart, legend
+naming each domain. If it still shows sample data, `_status` says why — usually fewer
+than two weeks on the `Auction Insights` tab ([GAPS §7](GAPS.md)).
 
 **☐ Slide 11 — check the product photos landed.** They are inserted automatically
 from the Shopping feed, matched by product title. Any frame still showing "Product

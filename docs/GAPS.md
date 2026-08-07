@@ -330,15 +330,32 @@ better served by the item-level table.
 
 ---
 
-## 7. Slide 9's chart object
+## 7. Slide 9's chart — now automated
 
-The framework deck's chart is a native PowerPoint chart carrying **sample data**.
-Once converted to Google Slides, `SlidesApp` cannot rewrite its series.
+**This changed.** It used to be a manual copy-paste.
 
-**What happens now:** the Report tab builds a proper line chart from
-`RPT_BRAND_IS` and parks it at the bottom. Copy it and paste it over the
-placeholder — which is what the deck's own speaker notes tell you to do. Paste as
-**linked** and next month's rebuild updates it in place.
+The template's slide 9 carries a **picture of a chart** holding sample data — not a
+chart object, so there are no series to rewrite. Its own caption said "replace with the
+linked Sheets chart". The writer now does exactly that: it finds the mock image, removes
+it, and inserts the live chart from the `Report` tab at the same position and size.
+
+**Linked, not an image.** The inserted chart keeps a reference back to the spreadsheet,
+so Slides can refresh it, and a rebuild replaces the same object rather than stacking
+stale pictures.
+
+Which chart: the **auction-insights weekly** one, with a legend naming each competitor
+domain, and our own line included via the export's `You` row. When there is not enough
+auction data to plot — fewer than two weeks or two domains — it falls back to the
+single-series brand impression share chart and **says which one it placed**, because a
+chart quietly answering a different question than its caption claims is worse than a
+gap.
+
+The mock is identified as the **largest image by area** on the slide, and only if it
+covers at least 5% of it. Slide 9 carries exactly two pictures: the chart at ~33% and the
+Lockhern logo at ~0.7%. Picking by width rather than area, or dropping the floor, deletes
+the logo — both are pinned by tests.
+
+**Still manual:** slide 12's ad-unit screenshot.
 
 ---
 
